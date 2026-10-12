@@ -12,6 +12,7 @@ public static class WarpBuild
         if (string.IsNullOrEmpty(output)) throw new Exception("WARP_APK_OUTPUT must be set");
         string applicationId = Environment.GetEnvironmentVariable("WARP_APPLICATION_ID") ?? "com.GTSafeRoboticsLab.xrteleopclient";
         PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, applicationId);
+        if (applicationId != "com.GTSafeRoboticsLab.xrteleopclient") PlayerSettings.productName = "XRT-Client Warp";
         var java = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpVolumeActivity.java") as PluginImporter;
         if (java == null) throw new Exception("Volume-up Java source plugin was not imported");
         java.SetCompatibleWithAnyPlatform(false);
