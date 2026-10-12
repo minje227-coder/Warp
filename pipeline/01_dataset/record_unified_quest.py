@@ -135,6 +135,35 @@ async def capture(args):
             await asyncio.sleep(0.4) # Deliver final headset status before closing SCTP.
             server.should_exit = True
 
+    @app.post('/upload')
+    async def upload(request: Request):
+        import hashlib
+        import tempfile
+        from local_episode import import_local_episode
+        upload_id = request.query_params.get('upload_id', '')
+        checksum = request.headers.get('x-warp-sha256', '')
+        if not re.fullmatch(r'[a-f0-9]{32}', upload_id) or not re.fullmatch(r'[a-f0-9]{64}', checksum):
+            return JSONResponse({'error':'Invalid upload identity/checksum'}, status_code=400)
+        upload_root = args.out_root.expanduser().resolve() / '.uploads'
+        upload_root.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256()
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=upload_root, suffix='.partial', delete=False) as file:
+                temporary = Path(file.name)
+                async for chunk in request.stream():
+                    file.write(chunk); digest.update(chunk)
+            if digest.hexdigest() != checksum:
+                raise ValueError('Upload checksum mismatch')
+            receipt = await asyncio.to_thread(import_local_episode, temporary, args.out_root,
+                                              upload_id, checksum, args.min_frames)
+            return receipt
+        except Exception as exc:
+            print('[UPLOAD FAIL]', str(exc), flush=True)
+            return JSONResponse({'error':str(exc)}, status_code=422)
+        finally:
+            if temporary is not None: temporary.unlink(missing_ok=True)
+
     @app.post('/offer')
     async def offer(request: Request):
         nonlocal error, first, last

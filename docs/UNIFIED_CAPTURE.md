@@ -175,3 +175,27 @@ Episode reservation now happens on volume-up START, not receiver startup.
 Cleaning old take directories while the receiver is idle cannot remove an open,
 reserved output directory. Removing the active recording directory fails the
 take explicitly; it does not fabricate a successful Saved result.
+
+
+## Quest local recording and deferred upload (2026-10-12)
+
+The volume-up button now records complete same-frame RGB JPEG, native-time
+skeleton brackets and AprilTag results to a sealed WQL1 file under
+Application.persistentDataPath/WarpEpisodes. Capture payloads are not sent over
+WebRTC during recording. Stop drains JPEG/tag work, closes the local file and
+immediately uploads it using HTTP POST /upload. The PC verifies SHA-256,
+imports into dated episode folders and validates the fixed-30-Hz MP4 and data
+before acknowledging Saved. Quest retains the sealed source as a backup.
+
+Keep at most 10 local takes, evicting the oldest PC-confirmed backup before
+starting the next take. Unconfirmed and partial files are never evicted; if
+all 10 slots are unconfirmed, recording is refused. An upload failure leaves
+the sealed take intact and volume-up retries it in the current app session.
+A receipt makes a repeated upload idempotent. Local files are JPEG/data
+containers; final MP4 encoding occurs on the PC, preserving original camera
+timestamps and explicitly marking held output frames.
+
+Verification: 20 receiver/protocol/artifact tests pass, including sealed-take
+import, corrupt/truncated input rejection and duplicate upload identity. An
+actual HTTP request test verifies saved artifacts, retries and hash rejection.
+These tests use synthetic frames; on-headset recording still requires a take.

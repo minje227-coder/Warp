@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Collections;
+using UnityEngine.Networking;
 using UnityEngine;
 
 // Added to the existing XRT controller. No second camera or Android application.
@@ -49,13 +51,88 @@ public class WarpCaptureBridge : MonoBehaviour
     BodyPoseProvider body;
     QuestCameraExtractor camera;
     QuestAprilTagTracker tracker;
-    class PendingFrame { public Bundle bundle; public byte[] jpeg; public double submittedAt; }
+    class PendingFrame { public Bundle bundle; public byte[] jpeg; public bool tagsReady; public double submittedAt; }
     readonly SortedDictionary<long, PendingFrame> pending = new SortedDictionary<long, PendingFrame>();
     long nextFrame;
+    BinaryWriter localWriter;
+    string localPath, uploadId;
+    bool uploading;
+    double localFps = 30;
+    double lastWrittenAt;
+    [Serializable] class UploadReply { public string state, upload_id, sha256, error; }
+
+    void BeginLocal() {
+        uploadId = Guid.NewGuid().ToString("N");
+        string directory = Path.Combine(Application.persistentDataPath, "WarpEpisodes");
+        Directory.CreateDirectory(directory);
+        var backups = new List<string>(Directory.GetFiles(directory, "*.wql"));
+        backups.AddRange(Directory.GetFiles(directory, "*.partial"));
+        backups.Sort((a,b) => File.GetCreationTimeUtc(a).CompareTo(File.GetCreationTimeUtc(b)));
+        while (backups.Count >= 10) {
+            string oldest = backups.Find(path => File.Exists(path + ".receipt.json"));
+            if (oldest == null) throw new IOException("10 unconfirmed local takes retained; send them before recording");
+            File.Delete(oldest); File.Delete(oldest + ".receipt.json"); backups.Remove(oldest);
+        }
+        localPath = Path.Combine(directory, uploadId + ".partial");
+        localWriter = new BinaryWriter(new FileStream(localPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read));
+        localWriter.Write(new byte[] {87,81,76,49}); // WQL1
+        localWriter.Write(localFps);
+        nextFrame = 0; pending.Clear();
+        Armed = true; Draining = false; terminalState = false;
+        lastWrittenAt = Time.realtimeSinceStartupAsDouble;
+        status.SetClean(cleanView); status.SetState("Recording");
+    }
+
+    IEnumerator FinishLocal() {
+        Armed = false; Draining = true; status.SetState("Saving…");
+        double deadline = Time.realtimeSinceStartupAsDouble + 10;
+        while (pending.Count > 0 && Time.realtimeSinceStartupAsDouble < deadline) {
+            DrainReady(); yield return null;
+        }
+        if (!Draining) yield break;
+        if (pending.Count > 0) { FailCapture("Local JPEG/AprilTag drain timed out; partial take retained"); yield break; }
+        Draining = false;
+        localWriter.Flush(); localWriter.Dispose(); localWriter = null;
+        string complete = Path.ChangeExtension(localPath, ".wql");
+        File.Move(localPath, complete); localPath = complete;
+        status.SetClean(false);
+        yield return UploadLocal();
+    }
+
+    IEnumerator UploadLocal() {
+        uploading = true; status.SetState("Sending…");
+        string hash;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        using (var file = File.OpenRead(localPath))
+            hash = BitConverter.ToString(sha.ComputeHash(file)).Replace("-", "").ToLowerInvariant();
+        string url = controller.serverUrl.Substring(0, controller.serverUrl.LastIndexOf('/')) +
+            "/upload?upload_id=" + uploadId;
+        using (var request = new UnityWebRequest(url, "POST")) {
+            request.uploadHandler = new UploadHandlerFile(localPath);
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Content-Type", "application/octet-stream");
+            request.SetRequestHeader("X-Warp-SHA256", hash);
+            request.timeout = 600;
+            yield return request.SendWebRequest();
+            uploading = false;
+            if (request.result == UnityWebRequest.Result.Success) {
+                var reply = JsonUtility.FromJson<UploadReply>(request.downloadHandler.text);
+                if (reply.state == "saved" && reply.upload_id == uploadId && reply.sha256 == hash) {
+                    File.WriteAllText(localPath + ".receipt.json", request.downloadHandler.text);
+                    localPath = null; terminalState = true; status.SetState("Saved"); yield break;
+                }
+            }
+            Debug.LogError("[Warp] Upload failed; local take retained: " + request.error + " " + request.downloadHandler.text);
+            terminalState = true; status.SetState("Send failed · volume up retries");
+        }
+    }
+
     double pendingTotalMs, perfAt;
     int pendingCount, rejectedBusy, rejectedBracket;
 
     public void SetArmed(bool armed) {
+        // A signaling disconnect must not stop a local recording or its drain.
+        if (localWriter != null || uploading) return;
         Armed = armed; Draining = false; pending.Clear();
         if (!armed && status != null) status.SetClean(false);
     }
@@ -64,7 +141,8 @@ public class WarpCaptureBridge : MonoBehaviour
         var command = JsonUtility.FromJson<Command>(json);
         if (command.type == "config" && camera != null && tracker != null) {
             configured = true; terminalState = false; cleanView = command.clean_view;
-            camera.captureInterval = 1.0 / Mathf.Clamp(command.rgb_fps, 1, 30);
+            localFps = Mathf.Clamp(command.rgb_fps, 1, 30);
+            camera.captureInterval = 1.0 / localFps;
             if (command.tag_size_m > 0) tracker.tagSizeMeters = command.tag_size_m;
             status.SetState("Ready");
         } else if (command.type == "state") {
@@ -83,11 +161,15 @@ public class WarpCaptureBridge : MonoBehaviour
     }
 
     public void ToggleRecording() {
-        if (!configured || waitingForAck) return;
-        if (controller.SendWarpControl(Armed ? "WARP_REQUEST_STOP" : "WARP_REQUEST_START")) {
-            waitingForAck = true; requestAt = Time.realtimeSinceStartupAsDouble;
-            status.SetState(Armed ? "Saving…" : "Preparing…");
+        if (uploading || Draining) return;
+        if (localPath != null && localWriter == null && File.Exists(localPath) && localPath.EndsWith(".wql")) {
+            StartCoroutine(UploadLocal()); return;
         }
+        if (!configured) return;
+        try {
+            if (Armed) StartCoroutine(FinishLocal());
+            else BeginLocal();
+        } catch (Exception error) { FailCapture("Local storage: " + error.Message); }
     }
 
     void Start() {
@@ -160,13 +242,14 @@ public class WarpCaptureBridge : MonoBehaviour
         if (pending.TryGetValue(result.frameId, out var frame)) {
             pendingCount++; pendingTotalMs += (Time.realtimeSinceStartupAsDouble-frame.submittedAt)*1000;
         }
-        var message = new TagMessage { frame_id=result.frameId, timestamp_ticks=result.timestampTicks,
-            tags=result.tags, error=result.error };
-        var metadata = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(message));
-        using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
-            writer.Write(metadata.Length); writer.Write(metadata);
-            controller.SendWarpCapture(result.frameId, stream.ToArray(), true);
+        if (!pending.TryGetValue(result.frameId, out var found)) return;
+        if (result.timestampTicks != found.bundle.timestamp_ticks || !string.IsNullOrEmpty(result.error)) {
+            FailCapture("AprilTag timestamp/error; partial take retained"); return;
         }
+        found.bundle.tags = result.tags;
+        found.bundle.tag_detection_pending = false;
+        found.tagsReady = true;
+        DrainReady();
     }
 
     public void CompleteJpeg(long frameId, byte[] jpeg) {
@@ -180,11 +263,15 @@ public class WarpCaptureBridge : MonoBehaviour
             var iterator = pending.GetEnumerator(); iterator.MoveNext();
             var entry = iterator.Current; iterator.Dispose();
             var frame = entry.Value;
-            if (frame.jpeg == null) return; // Tag completion is joined by lab6, never blocks RGB.
+            if (frame.jpeg == null || !frame.tagsReady) return;
             var metadata = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(frame.bundle));
             using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
                 writer.Write(metadata.Length); writer.Write(metadata); writer.Write(frame.jpeg);
-                controller.SendWarpCapture(entry.Key, stream.ToArray());
+                byte[] payload = stream.ToArray();
+                try {
+                    localWriter.Write(payload.Length); localWriter.Write(payload);
+                    lastWrittenAt = Time.realtimeSinceStartupAsDouble;
+                } catch (Exception error) { FailCapture("Local write failed: " + error.Message); return; }
             }
             pending.Remove(entry.Key);
         }
@@ -192,7 +279,7 @@ public class WarpCaptureBridge : MonoBehaviour
 
     public void FailCapture(string reason) {
         Debug.LogError("[Warp] " + reason);
-        controller.SendWarpControl("WARP_CAPTURE_ERROR");
+        if (localWriter != null) { localWriter.Dispose(); localWriter = null; }
         Armed = Draining = false; pending.Clear(); terminalState = true;
         status.SetClean(false); status.SetState("Recording error");
     }
@@ -200,6 +287,7 @@ public class WarpCaptureBridge : MonoBehaviour
     public void RejectPending(long frameId) { pending.Remove(frameId); DrainReady(); }
 
     void OnDestroy() {
+        if (localWriter != null) { localWriter.Dispose(); localWriter = null; }
         if (body != null) body.OnPoseUpdated -= OnBody;
         if (tracker != null) tracker.OnFrameDetected -= OnTags;
         if (status != null) Destroy(status.gameObject);
@@ -215,7 +303,10 @@ public class WarpCaptureBridge : MonoBehaviour
             terminalState = true; pending.Clear();
             status.SetClean(false); status.SetState("Connection lost");
         }
-        if (!controller.IsConnected && status != null && !terminalState) {
+        if (Armed && Time.realtimeSinceStartupAsDouble - lastWrittenAt > 10) {
+            FailCapture("Local capture stalled for 10s; partial take retained");
+        }
+        if (!controller.IsConnected && status != null && !terminalState && !Armed && !Draining && !uploading && localPath == null) {
             bool lost = configured || Armed || waitingForAck;
             configured = false; Armed = false; waitingForAck = false;
             pending.Clear();
