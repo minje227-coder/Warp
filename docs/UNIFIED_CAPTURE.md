@@ -169,3 +169,9 @@ Measured baseline on 2026-10-12 take 8: 175 unique inputs over 15.07 seconds,
 15.4-16.1 ms, old one-frame AprilTag wait 38.1-40.2 ms. About 45-47 attempts
 per 5 seconds were rejected while one frame was pending. These measurements
 precede async tags/native time changes; a new physical measurement is required.
+
+
+Episode reservation now happens on volume-up START, not receiver startup.
+Cleaning old take directories while the receiver is idle cannot remove an open,
+reserved output directory. Removing the active recording directory fails the
+take explicitly; it does not fabricate a successful Saved result.

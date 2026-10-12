@@ -203,6 +203,7 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
                 # Connected/ready alone cannot start recording.
                 await asyncio.sleep(0.1)
                 self.assertFalse(recording.is_set())
+                self.assertFalse(list(Path(temp).glob('*/[0-9]*')), 'No storage folder before volume-up start')
                 channel.send(b'WARP_REQUEST_START')
                 await asyncio.wait_for(recording.wait(),5)
                 jpeg = synthetic_jpeg()

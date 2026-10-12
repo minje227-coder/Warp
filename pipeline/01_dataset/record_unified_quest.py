@@ -54,8 +54,8 @@ async def capture(args):
         print('[OK] Unified receiver dependencies. Updated XRT APK/hardware NOT tested.')
         return 0
     session = args.session or datetime.now(timezone.utc).strftime('take_%Y%m%dT%H%M%SZ')
-    folder = reserve_episode(args.out_root)
-    writer = BundleWriter(folder, fps=args.rgb_fps)
+    folder = None
+    writer = None
     assembler = Reassembler()
     tag_assembler = Reassembler(magic=b'WRT1', metadata_only=True)
     tag_joiner = TagJoiner()
@@ -94,7 +94,14 @@ async def capture(args):
     async def finalize():
         nonlocal final_metadata, error, completed_episodes, stopping, requested_at, first, last
         await write_queue.join()
+        if writer is None: return
         await asyncio.to_thread(writer.close)
+        if not folder.is_dir():
+            error = f'Recording directory disappeared: {folder}'
+            final_metadata = {'status':'failed','error':error}
+            print('[FAIL]',final_metadata,flush=True)
+            state('error'); await asyncio.sleep(0.4); server.should_exit = True
+            return
         if assembler.pending or tag_assembler.pending or tag_joiner.pending:
             error = error or 'Incomplete RGB/AprilTag bundle at stop'
         summary = inspect_csv(folder / 'body.csv', min_frames=args.min_frames, strict_sew=True)
@@ -131,7 +138,7 @@ async def capture(args):
     @app.post('/offer')
     async def offer(request: Request):
         nonlocal error, first, last
-        if peers or writer.frames:
+        if peers or (writer is not None and writer.frames):
             return JSONResponse({'error':'Only one headset connection per episode'}, status_code=409)
         params = await request.json()
         peer = RTCPeerConnection(); peers.add(peer)
@@ -155,7 +162,7 @@ async def capture(args):
                     if packet == b'WARP_CAPTURE_ERROR': raise ValueError('Quest capture processing backlog/error')
                     if packet == 'WARP_REQUEST_START':
                         if requested_at is None and not stopping:
-                            if final_metadata is not None:
+                            if writer is None or final_metadata is not None:
                                 folder = reserve_episode(args.out_root)
                                 writer = BundleWriter(folder, fps=args.rgb_fps)
                                 assembler = Reassembler()
@@ -217,11 +224,11 @@ async def capture(args):
                 await finalize()
                 if server.should_exit: return
             if now - report >= 5:
-                print(f'Shared frames={writer.frames}; source frames={writer.source_frames}; repeated={writer.repeated_frames}; detected tags={writer.tag_detections}', flush=True)
+                print(f'Shared frames={writer.frames if writer else 0}; source frames={writer.source_frames if writer else 0}; repeated={writer.repeated_frames if writer else 0}; detected tags={writer.tag_detections if writer else 0}', flush=True)
                 report = now
             await asyncio.sleep(0.05)
 
-    print('Episode:',folder, flush=True)
+    print('Ready; episode folder is reserved on volume-up start.', flush=True)
     print(f'Existing XRT app → http://PC-IP:{args.port}/offer; volume-up starts/stops all three.', flush=True)
     write_task = asyncio.create_task(write_bundles())
     task = asyncio.create_task(monitor())
@@ -230,13 +237,14 @@ async def capture(args):
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        if final_metadata is None:
+        if final_metadata is None and writer is not None:
             if writer.frames and not error: error = 'Server stopped without Quest stop/finalization'
             await finalize()
         write_task.cancel()
         await asyncio.gather(write_task, return_exceptions=True)
         await asyncio.gather(*(peer.close() for peer in peers))
-        writer.close()
+        if writer is not None: writer.close()
+    if final_metadata is None: return 0 if not error else 2
     success = final_metadata['status'] == 'complete'
     print('[OK]' if success else '[FAIL]',final_metadata, flush=True)
     return 0 if success else 2
