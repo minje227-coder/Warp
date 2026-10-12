@@ -24,7 +24,7 @@ The small headset status label uses English only:
 - `Saved`: lab6 saved a complete episode and verified its MP4 frame count.
 - `Recording error` / `Connection lost`: capture or acknowledgement failed.
 
-While recording, existing canvases, skeleton visualization spheres and tag axes are
+While recording, existing canvases, the video viewport, skeleton visualization spheres and tag axes are
 hidden by default. Their previous state is restored afterward. The physical camera
 images never contain Unity UI overlays, independent of headset display visibility.
 
@@ -53,6 +53,7 @@ independent. The source samples in each capture bundle are retained, not a conti
 ```bash
 bash scripts/bootstrap.sh capture
 bash scripts/01_capture/install_receiver.sh
+git -C third_party/capture/xrt-client lfs pull
 # Unity 6000.3.11f1, Android support, and an activated Unity license are required.
 export UNITY_EDITOR=/absolute/path/to/Unity
 python3 scripts/01_capture/build_unified_quest.py --server-ip LAB6_IP
@@ -63,19 +64,30 @@ applies the tracked patch and copies the capture/status sources. It builds the e
 `MainScene`, rather than the ZED-only scene selected by upstream's current build settings.
 APK/signing keys/Editor caches are not committed. To repeat preparation, use a fresh
 `--project` path; existing project directories are never overwritten.
+Git LFS assets are copied from the vendor checkout only after verifying their SHA-256
+and size: `git archive` otherwise leaves small pointer files in place of textures/models.
+One import worker is configured for a build host sharing memory with other workloads.
+The optional Unity MCP Editor package is omitted because the player does not use it.
+
+On Linux, Meta SDK v85's simulator installer has an Editor compilation bug. After
+package resolution, run `build_unified_quest.py --repair-linux-packages --project PATH`
+before retrying the build. This makes the unsupported simulator installation fail
+explicitly on Linux; Android runtime code is unchanged.
 
 Before deploying, stop the legacy companion and restore XRT camera permissions using
 the private snapshot created by the earlier preparation command:
 
 ```bash
 python3 scripts/01_capture/prepare_quest_rgb.py --adb /absolute/path/to/adb \
-  --serial QUEST_SERIAL --restore-xrt-camera
+  --serial QUEST_SERIAL --receiver-host LAB6_IP --restore-xrt-camera
 adb -s QUEST_SERIAL install -r .venv/android-build/xrt-unified.apk
 ```
 
 An APK signed by a different key cannot replace the installed release. Do not uninstall
 the existing app and erase its preferences without preserving them and resolving the
 signing/install migration explicitly. New launcher activity: `dev.warp.capture.WarpVolumeActivity`.
+For a separately signed build, use `--application-id com.GTSafeRoboticsLab.xrteleopclient.warp`.
+Its launcher label is `XRT-Client Warp`; the original release remains installed.
 
 ## lab6 recorder
 

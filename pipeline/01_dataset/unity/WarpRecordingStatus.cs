@@ -83,7 +83,11 @@ public class WarpRecordingStatus : MonoBehaviour
             canvas.enabled = false;
         }
         foreach (var renderer in FindObjectsByType<Renderer>(FindObjectsInactive.Include, FindObjectsSortMode.None)) {
-            if (!renderer.gameObject.name.StartsWith("Bone_", StringComparison.Ordinal)) continue;
+            bool videoViewport = false;
+            for (var parent = renderer.transform; parent != null; parent = parent.parent) {
+                if (parent.name == "VideoStreamingViewport") { videoViewport = true; break; }
+            }
+            if (!videoViewport && !renderer.gameObject.name.StartsWith("Bone_", StringComparison.Ordinal)) continue;
             if (!rendererState.ContainsKey(renderer)) rendererState[renderer] = renderer.enabled;
             renderer.enabled = false;
         }
