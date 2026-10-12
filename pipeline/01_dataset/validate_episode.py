@@ -26,10 +26,20 @@ def inspect_episode(folder: Path, *, min_frames=30, strict_sew=False):
             previous = -1
             for bundle, row in zip(bundles, rows):
                 if Path(row['file']).name != row['file']: raise ValueError('Invalid RGB filename')
-                jpeg = (folder/'rgb'/row['file']).read_bytes()
+                jpeg = None if meta.get('rgb_storage') == 'direct_mp4' else (folder/'rgb'/row['file']).read_bytes()
                 validate_bundle(bundle,jpeg)
                 stamp, frame_id = bundle['timestamp_ticks'], bundle['frame_id']
-                if stamp <= previous: raise ValueError('Capture clock is not strictly increasing')
+                if stamp < previous or (stamp == previous and not bundle.get('repeated')):
+                    raise ValueError('Capture clock regressed or unmarked repeated sample')
+                if meta.get('rgb_storage') == 'direct_mp4':
+                    index = len(expected_body) // len(bundle['bones'])
+                    if (bundle['video_frame_index'] != index or int(row['video_frame_index']) != index
+                            or int(row['source_frame_id']) != bundle['source_frame_id']
+                            or abs(float(row['time_elapsed']) - bundle['time_elapsed']) > 1e-9
+                            or int(row['timestep_ticks']) != bundle['timestep_ticks']
+                            or bundle['timestep_ticks'] != round(index*10_000_000/meta['recording_fps'])
+                            or abs(bundle['time_elapsed'] - index/meta['recording_fps']) > 1e-9):
+                        raise ValueError('Shared fixed timestep mismatch')
                 previous = stamp
                 if int(row['frame_id']) != frame_id or any(int(row[name]) != stamp for name in
                         ('timestamp_ticks','body_timestamp_ticks','apriltag_timestamp_ticks')):
@@ -46,6 +56,8 @@ def inspect_episode(folder: Path, *, min_frames=30, strict_sew=False):
                 if key in seen: raise ValueError('Duplicate skeleton row')
                 seen.add(key)
                 stamp,bone = expected_body[key]
+                if meta.get('rgb_storage') == 'direct_mp4' and abs(float(row['time_elapsed']) - (key[0]-1)/meta['recording_fps']) > 1e-9:
+                    raise ValueError('Skeleton/data timestep mismatch')
                 if int(row['timestamp_ticks']) != stamp: raise ValueError('Skeleton timestamp differs from RGB')
                 for axis in 'xyz':
                     if abs(float(row['pos_'+axis])-bone['position'][axis]) > 1e-5:
@@ -55,7 +67,14 @@ def inspect_episode(folder: Path, *, min_frames=30, strict_sew=False):
             if tags != expected_tags: raise ValueError('AprilTag rows differ from shared RGB frames')
             import av
             with av.open(str(folder/'rgb/video.mp4')) as video:
-                decoded = sum(1 for _ in video.decode(video=0))
+                decoded = 0
+                for index, frame in enumerate(video.decode(video=0)):
+                    if meta.get('rgb_storage') == 'direct_mp4':
+                        if (frame.width,frame.height) != (bundles[index]['width'],bundles[index]['height']):
+                            raise ValueError('Video dimensions disagree with bundle')
+                        if abs(float(frame.pts*frame.time_base) - bundles[index]['time_elapsed']) > 1e-6:
+                            raise ValueError('Video/data timestep mismatch')
+                    decoded += 1
             if decoded != len(bundles): raise ValueError('Video frame count differs from shared capture')
             result['unified'] = {'shared_frames':len(bundles),'tag_detections':len(tags),
                 'same_timestamp':True,'clock':meta['clock'],'hardware_synchronized':False}

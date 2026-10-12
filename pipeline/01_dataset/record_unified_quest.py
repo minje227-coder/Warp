@@ -13,11 +13,11 @@ from validate_csv import inspect_csv
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--session')
-    p.add_argument('--out-root', type=Path, default=Path(__file__).resolve().parents[2] / 'local_data/raw_human')
+    p.add_argument('--out-root', type=Path, default=Path.home() / 'Warp_data')
     p.add_argument('--host', default='0.0.0.0'); p.add_argument('--port', type=int, default=8080)
     p.add_argument('--duration', type=float, default=0); p.add_argument('--wait-seconds', type=float, default=90)
     p.add_argument('--min-frames', type=int, default=30); p.add_argument('--check', action='store_true')
-    p.add_argument('--rgb-fps', type=float, default=10)
+    p.add_argument('--rgb-fps', type=float, default=30)
     p.add_argument('--tag-size-m', type=float, default=0.04, help='Printed tag side length in meters (default 40 mm); 0 keeps app setting')
     p.add_argument('--keep-overlays', action='store_true')
     args = p.parse_args(argv)
@@ -29,6 +29,20 @@ def parse_args(argv=None):
         p.error('rgb-fps must be 1-30; tag-size-m must be 0-10')
     return args
 
+def reserve_episode(out_root, day=None):
+    """Atomically reserve DATE/N; concurrent recorders never reuse a take folder."""
+    day = day or datetime.now().strftime('%Y-%m-%d')
+    date_folder = out_root.expanduser().resolve() / day
+    date_folder.mkdir(parents=True, exist_ok=True)
+    number = max((int(p.name) for p in date_folder.iterdir() if p.name.isdigit()), default=0) + 1
+    while True:
+        folder = date_folder / str(number)
+        try:
+            folder.mkdir(exist_ok=False)
+            return folder
+        except FileExistsError:
+            number += 1
+
 async def capture(args):
     from aiortc import RTCPeerConnection, RTCSessionDescription
     from fastapi import FastAPI, Request
@@ -39,10 +53,10 @@ async def capture(args):
         print('[OK] Unified receiver dependencies. Updated XRT APK/hardware NOT tested.')
         return 0
     session = args.session or datetime.now(timezone.utc).strftime('take_%Y%m%dT%H%M%SZ')
-    folder = args.out_root.expanduser().resolve() / session
-    folder.mkdir(parents=True, exist_ok=False)
-    writer = BundleWriter(folder)
+    folder = reserve_episode(args.out_root)
+    writer = BundleWriter(folder, fps=args.rgb_fps)
     assembler = Reassembler()
+    write_queue = asyncio.Queue(maxsize=8)
     app = FastAPI()
     peers = set()
     channels = []
@@ -60,23 +74,44 @@ async def capture(args):
         for channel in channels:
             if channel.readyState == 'open': channel.send(payload)
 
+    async def write_bundles():
+        nonlocal error
+        while True:
+            bundle = await write_queue.get()
+            try:
+                if not error:
+                    await asyncio.to_thread(writer.write, *bundle)
+            except Exception as exc:
+                error = f'{type(exc).__name__}: {exc}'
+                state('error'); server.should_exit = True
+            finally:
+                write_queue.task_done()
+
     async def finalize():
         nonlocal final_metadata, error
-        writer.close()
+        await write_queue.join()
+        await asyncio.to_thread(writer.close)
         if assembler.pending: error = error or 'Incomplete RGB bundle at stop'
         summary = inspect_csv(folder / 'body.csv', min_frames=args.min_frames, strict_sew=True)
         video = None
-        if writer.frames >= args.min_frames and not error and summary['ok']:
+        if writer.source_frames >= args.min_frames and not error and summary['ok']:
             try: video = await asyncio.to_thread(writer.make_video)
             except Exception as exc: error = 'RGB video verification failed: ' + str(exc)
-        success = not error and summary['ok'] and writer.frames >= args.min_frames
-        final_metadata = {'status':'complete' if success else 'failed','error':error,
+        success = not error and summary['ok'] and writer.source_frames >= args.min_frames
+        final_metadata = {'session':session, 'episode_date':folder.parent.name,
+            'episode_number':int(folder.name), 'status':'complete' if success else 'failed','error':error,
             'capture_protocol':'warp_capture_v1','rgb_required':True,
             'streams_captured':['body_pose_bones','rgb','apriltag'],
             'clock':'quest_utc_ticks_100ns','timestamp_owner':'camera SDK capture timestamp',
             'skeleton_time_source':'provider_query_utc','alignment':'interpolated_between_provider_samples',
             'max_bracket_distance_ms':50,'shared_frames':writer.frames,
             'tag_detections':writer.tag_detections,'hardware_synchronized':False,
+            'recording_fps':args.rgb_fps,'timestep_s':1 / args.rgb_fps,
+            'rgb_storage':'direct_mp4','resampling':'nearest_camera_slot_with_explicit_previous_bundle_hold',
+            'source_frames':writer.source_frames,'repeated_frames':writer.repeated_frames,
+            'source_fps': ((writer.source_frames - 1)*10_000_000/(writer.last_timestamp-writer.origin)
+                           if writer.source_frames > 1 else 0),
+            'coalesced_frames':writer.coalesced_frames,
             'rgb':{'frames':writer.frames,'video':video}, 'control':'Quest volume-up only',
             'tag_size_note':'Actual printed tag size must match server/app setting for metric pose.'}
         (folder/'metadata.json').write_text(json.dumps(final_metadata,indent=2)+'\n')
@@ -120,7 +155,7 @@ async def capture(args):
                         raise ValueError('Capture data arrived before volume-up start')
                     bundle = assembler.feed(packet)
                     if bundle is not None:
-                        writer.write(*bundle)
+                        write_queue.put_nowait(bundle)
                         last = time.monotonic()
                         if first is None:
                             first = last
@@ -153,12 +188,13 @@ async def capture(args):
             if stopping and now - stop_at > 0.5:
                 await finalize(); return
             if now - report >= 5:
-                print(f'Shared frames={writer.frames}; detected tags={writer.tag_detections}', flush=True)
+                print(f'Shared frames={writer.frames}; source frames={writer.source_frames}; repeated={writer.repeated_frames}; detected tags={writer.tag_detections}', flush=True)
                 report = now
             await asyncio.sleep(0.05)
 
     print('Episode:',folder, flush=True)
     print(f'Existing XRT app → http://PC-IP:{args.port}/offer; volume-up starts/stops all three.', flush=True)
+    write_task = asyncio.create_task(write_bundles())
     task = asyncio.create_task(monitor())
     try:
         await server.serve()
@@ -168,6 +204,8 @@ async def capture(args):
         if final_metadata is None:
             if writer.frames and not error: error = 'Server stopped without Quest stop/finalization'
             await finalize()
+        write_task.cancel()
+        await asyncio.gather(write_task, return_exceptions=True)
         await asyncio.gather(*(peer.close() for peer in peers))
         writer.close()
     success = final_metadata['status'] == 'complete'

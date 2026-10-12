@@ -1,7 +1,8 @@
 # One XRT app: RGB + Skeleton + AprilTag
 
 Implementation branch: `main`. Receiver/transport/artifact tests pass;
-Unity compilation, APK installation, Quest volume-key dispatch, and physical alignment still require verification.
+Unity compilation, APK installation, physical volume-up start/stop and Saved were verified.
+The first 71-frame episode passed shared timestamps and detected tag ID 2, but its RGB was vertically inverted; a camera row-order fix is being rebuilt and needs a new physical clip.
 The previously tested companion app is a legacy capture mode, not this implementation.
 
 The existing XRT MainScene already contains the right PCA camera, full-body provider,
@@ -103,12 +104,35 @@ frame; volume up can stop earlier. A server invocation saves one episode without
 overwriting; start another invocation for another take. `--keep-overlays` retains
 the existing headset visualization. `--body-only` explicitly uses the legacy body receiver.
 
+Default output: `~/Warp_data/YYYY-MM-DD/1`, `2`, and so on, using the lab6 local date.
+Folder reservation uses atomic mkdir and never reuses an existing take; failed/reserved
+folders also keep their numbers. `--session` labels metadata and does not replace the
+numeric folder. `--out-root` optionally changes the root.
+
 Artifacts: `body.csv`, `apriltag.csv`, `capture.jsonl` including original pose brackets,
 `rgb/frame_*.jpg`, `rgb/timestamps.csv`, `rgb/video.mp4`, and `metadata.json`.
 
 ```bash
-bash scripts/01_capture/validate_body.sh local_data/raw_human/take_0001 --strict-sew
+bash scripts/01_capture/validate_body.sh ~/Warp_data/YYYY-MM-DD/1 --strict-sew
 ```
 
 Reference: [Meta PCA API v85](https://developers.meta.com/vr/reference/mruk/v85/class_meta_x_r_passthrough_camera_access/).
 Its asynchronous direct readback avoids pairing the previous Blit texture with the latest timestamp.
+
+
+## Fixed timestep / direct video (30 Hz default)
+
+The receiver writes `rgb/video.mp4` during recording without retaining JPGs.
+Video frame index i, body.csv time_elapsed, apriltag.csv time_elapsed and
+capture.jsonl time_elapsed all use i / recording_fps. Default is 30 Hz
+(33.333333 ms); rational PTS avoids cumulative rounding drift.
+`timestamp_ticks` retains the actual source camera timestamp and skeleton brackets.
+`source_frame_id` links output slots to the original complete RGB/body/tag bundle.
+If source frames miss a slot, the preceding complete bundle is held and marked
+`repeated=true`; this applies to all three streams, including tag results.
+A repeated tag is a held detection, not a newly detected tag. Incoming bundles
+quantized into an already written slot are coalesced and counted. A gap above
+2 seconds fails capture. Metadata reports source/repeated/coalesced counts;
+30 Hz video output alone does not establish 30 unique camera frames per second.
+Camera scheduling uses a camera-time phase instead of waiting from each readback.
+Capture artifacts retain original timestamps; no receiver wall clock restamping.

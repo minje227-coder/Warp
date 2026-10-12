@@ -1,7 +1,7 @@
 # Unity APK build on lab6
 
 XRT-Client Warp의 빌드 작업은 **lab6의 main**에서 한다. Mac은 Quest USB 연결을 전달하는 용도로만 사용한다.
-최초 작성: 2026-10-12. 첫 APK 빌드와 Quest 설치/실행은 성공했다. 실제 볼륨 업으로 프레임을 전송했으나 AprilTag JSON 누락으로 수신기가 거절했고, 이를 수정해 재빌드 중이다. 실물 녹화 완료는 별도로 검증한다.
+최초 작성: 2026-10-12. APK 빌드/설치, 실제 볼륨 업 start/stop, Saved, 71 shared frames와 tag ID 2 검출을 확인했다. 첫 영상의 상하 반전을 발견해 행 순서 수정 APK를 재빌드 중이다. 수정 후 영상 방향을 재확인한다.
 
 ## 이미 설치된 환경: 다시 다운로드하지 말 것
 
@@ -158,7 +158,7 @@ USB가 lab6에 직접 연결돼 있으면 -H/-P를 생략한다. 새 컴퓨터�
 cd /home/lab6/Warp
 bash scripts/01_capture/record_body.sh --session take_0001 --wait-seconds 600
 # Quest: volume up으로 시작, 다시 volume up으로 종료
-bash scripts/01_capture/validate_body.sh local_data/raw_human/take_0001 --strict-sew
+bash scripts/01_capture/validate_body.sh ~/Warp_data/YYYY-MM-DD/1 --strict-sew
 ```
 
 하나의 앱에서 RGB + Skeleton + AprilTag를 동일 frame_id/camera timestamp로 저장한다.
@@ -170,3 +170,12 @@ Software 테스트 성공, APK 빌드 성공, 설치 성공, headset 실물 녹�
 태그 기본값은 한 변 **0.04 m (40 × 40 mm)**이다. lab6 receiver가 Ready 전에 앱에 전송하고 metric pose 계산에 사용한다. 다른 인쇄 크기는 --tag-size-m으로 지정한다.
 
 추가 메모리 제한: WarpBuild는 IL2CPP conversion에도 --jobs=2를 전달하고, Android module의 Gradle JVM heap을 2048 MB로 설정한다. Bee 동시 작업 제한만으로 IL2CPP conversion의 내부 병렬성이 제한되지는 않는다. 중단된 빌드의 Gradle/VBCSCompiler 프로세스가 남아 있는지도 PID와 빌드 경로로 확인한다. 다른 작업의 프로세스는 종료하지 않는다.
+
+저장 경로: lab6의 ~/Warp_data/YYYY-MM-DD/N. N은 1부터 시작하며 atomic mkdir로 중복을 피한다. --session은 metadata label이고, 같은 label을 반복해도 기존 take를 덮어쓰지 않는다. 날짜는 lab6 로컬 날짜이며 서버 실행 시 폴더를 예약한다. 기존 첫 영상은 이 경로로 이동했고, 원본 상하 반전 이슈를 metadata에 기록했다. 이후 upright clip으로 실물 확인한다.
+
+
+30 Hz update: receiver default --rgb-fps 30; direct CFR MP4 without JPGs.
+Camera extractor schedules by camera timestamp phase. Shared output time_elapsed
+is frame_index/30 and source camera timestamps remain unchanged. Missing slots
+hold the previous complete bundle with repeated=true for all modalities.
+Unique capture FPS must be measured from source_frames, not output frames.

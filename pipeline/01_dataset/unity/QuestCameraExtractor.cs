@@ -14,8 +14,8 @@ public class QuestCameraExtractor : MonoBehaviour
     [NonSerialized] public WarpCaptureBridge capture;
     bool busy;
     long lastTimestamp;
-    double nextReadback;
-    [NonSerialized] public double captureInterval = 0.1;
+    double nextCaptureTicks;
+    [NonSerialized] public double captureInterval = 1.0 / 30.0;
     void Start() {
 #if UNITY_ANDROID && !UNITY_EDITOR
         const string permission = "horizonos.permission.HEADSET_CAMERA";
@@ -28,10 +28,14 @@ public class QuestCameraExtractor : MonoBehaviour
 
     void LateUpdate() {
         if (busy || cameraAccess == null || !cameraAccess.IsPlaying || !cameraAccess.IsUpdatedThisFrame ||
-            tracker == null || !tracker.isActiveAndEnabled || Time.realtimeSinceStartupAsDouble < nextReadback) return;
+            tracker == null || !tracker.isActiveAndEnabled) return;
         var texture = cameraAccess.GetTexture();
         long timestamp = cameraAccess.Timestamp.Ticks;
         if (texture == null || timestamp <= lastTimestamp) return;
+        double intervalTicks = captureInterval * TimeSpan.TicksPerSecond;
+        if (nextCaptureTicks == 0) nextCaptureTicks = timestamp;
+        // Phase anchored to camera time; tolerate camera jitter at the slot boundary.
+        if (timestamp + intervalTicks * 0.25 < nextCaptureTicks) return;
         int width = texture.width, height = texture.height;
         var intrinsics = cameraAccess.Intrinsics;
         if (intrinsics.FocalLength.x <= 0 || intrinsics.FocalLength.y <= 0 ||
@@ -47,7 +51,8 @@ public class QuestCameraExtractor : MonoBehaviour
         float cx = (intrinsics.PrincipalPoint.x - cropX) * scale;
         float cy = (intrinsics.PrincipalPoint.y - cropY) * scale;
         string eye = cameraAccess.CameraPosition.ToString().ToLowerInvariant();
-        lastTimestamp = timestamp; nextReadback = Time.realtimeSinceStartupAsDouble + captureInterval;
+        lastTimestamp = timestamp;
+        nextCaptureTicks += (Math.Floor(Math.Max(0, timestamp - nextCaptureTicks) / intervalTicks) + 1) * intervalTicks;
         busy = true;
         // Direct readback ordered after PCA's render-thread texture update. A blocking Blit
         // would capture the previous texture and attach the wrong image timestamp.
@@ -58,9 +63,10 @@ public class QuestCameraExtractor : MonoBehaviour
             if (source.Length < width * height) return;
             var rgba = new byte[width * height * 4];
             var gray = new byte[width * height];
-            // Canonical top-left image: the JPEG and native tag detector receive the same pixels.
+            // Quest PCA readback already has upright row order on this player.
+            // Preserve it for both JPEG and detection; an extra Y flip inverts the scene.
             for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
-                var c = source[(height - 1 - y) * width + x];
+                var c = source[y * width + x];
                 int p = y * width + x;
                 rgba[p * 4] = c.r; rgba[p * 4 + 1] = c.g;
                 rgba[p * 4 + 2] = c.b; rgba[p * 4 + 3] = 255;

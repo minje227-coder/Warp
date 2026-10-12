@@ -86,9 +86,13 @@ class UnifiedTest(unittest.TestCase):
             root = Path(temp)
             writer = BundleWriter(root)
             for i in range(1,4): writer.write(metadata(i),jpeg)
-            writer.close(); self.assertEqual(writer.make_video()['decoded_frames'],3)
+            writer.close(); video = writer.make_video()
+            self.assertEqual(video['decoded_frames'],7)
+            self.assertEqual(video['repeated_frames'],4)
+            self.assertFalse(list(root.rglob('*.jpg')))
             (root/'metadata.json').write_text(json.dumps({'status':'complete',
-                'capture_protocol':'warp_capture_v1','shared_frames':3,'clock':'quest_utc_ticks_100ns'}))
+                'capture_protocol':'warp_capture_v1','shared_frames':7,'clock':'quest_utc_ticks_100ns',
+                'rgb_storage':'direct_mp4','recording_fps':30}))
             self.assertTrue(inspect_episode(root,min_frames=3,strict_sew=True)['ok'])
             path = root/'rgb/timestamps.csv'
             rows = path.read_text().splitlines()
@@ -96,6 +100,22 @@ class UnifiedTest(unittest.TestCase):
             rows[1] = ','.join(cells); path.write_text('\n'.join(rows)+'\n')
             result = inspect_episode(root,min_frames=3,strict_sew=True)
             self.assertFalse(result['ok']); self.assertIn('timestamps disagree',' '.join(result['messages']))
+
+class EpisodeStorageTest(unittest.TestCase):
+    def test_daily_numbering_preserves_data_and_handles_concurrent_reservations(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from record_unified_quest import reserve_episode
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            first = reserve_episode(root, '2026-10-12')
+            (first/'existing.txt').write_text('preserve me')
+            second = reserve_episode(root, '2026-10-12')
+            self.assertEqual(first.name,'1'); self.assertEqual(second.name,'2')
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                folders = list(pool.map(lambda _: reserve_episode(root,'2026-10-12'),range(8)))
+            self.assertEqual(len(set(folders)),8)
+            self.assertEqual((first/'existing.txt').read_text(),'preserve me')
+            self.assertEqual(reserve_episode(root,'2026-10-13').name,'1')
 
 class WebRTCTest(unittest.IsolatedAsyncioTestCase):
     async def test_ready_start_stop_saved_over_actual_webrtc(self):
@@ -147,7 +167,9 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await asyncio.wait_for(server,8),0)
                 states = [message.get('state') for message in received]
                 self.assertIn('saving',states); self.assertIn('saved',states)
-                result = inspect_episode(Path(temp)/'synthetic_test',min_frames=3,strict_sew=True)
+                episodes = list(Path(temp).glob('*/[0-9]*/metadata.json'))
+                self.assertEqual(len(episodes),1)
+                result = inspect_episode(episodes[0].parent,min_frames=3,strict_sew=True)
                 self.assertTrue(result['ok'],result['messages'])
             finally:
                 await client.close()
