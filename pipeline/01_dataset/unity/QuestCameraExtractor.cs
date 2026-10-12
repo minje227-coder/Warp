@@ -1,4 +1,6 @@
 using System;
+using System.Threading.Tasks;
+using System.Collections.Generic;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -12,8 +14,18 @@ public class QuestCameraExtractor : MonoBehaviour
     public PassthroughCameraAccess cameraAccess;
     public QuestAprilTagTracker tracker;
     [NonSerialized] public WarpCaptureBridge capture;
-    bool busy;
+    int inFlight;
+    class DetectionWork {
+        public byte[] gray; public int width, height;
+        public double fx, fy, cx, cy; public Pose pose;
+        public long frameId, timestamp;
+    }
+    readonly Queue<DetectionWork> detectionQueue = new Queue<DetectionWork>();
     long lastTimestamp;
+    long observedTimestamp;
+    double perfReportAt;
+    int loops, cameraFrames, busySkips, accepted, submitSkips, callbacks;
+    double gpuMs, pixelsMs, jpegMs;
     double nextCaptureTicks;
     [NonSerialized] public double captureInterval = 1.0 / 30.0;
     void Start() {
@@ -27,7 +39,27 @@ public class QuestCameraExtractor : MonoBehaviour
     }
 
     void LateUpdate() {
-        if (busy || cameraAccess == null || !cameraAccess.IsPlaying || !cameraAccess.IsUpdatedThisFrame ||
+        if (capture != null && (capture.Armed || capture.Draining)) TryDetection();
+        else detectionQueue.Clear();
+        if (capture != null && capture.Draining) return;
+        if (capture != null && capture.Armed) {
+            loops++;
+            if (cameraAccess != null && cameraAccess.IsPlaying && cameraAccess.IsUpdatedThisFrame &&
+                cameraAccess.Timestamp.Ticks > observedTimestamp) {
+                observedTimestamp = cameraAccess.Timestamp.Ticks; cameraFrames++;
+            }
+            if (inFlight >= 2) busySkips++;
+            double now = Time.realtimeSinceStartupAsDouble;
+            if (perfReportAt == 0) perfReportAt = now;
+            if (now - perfReportAt >= 5) {
+                double dt = now - perfReportAt;
+                Debug.Log($"[WarpPerf] loop_fps={loops/dt:F1} camera_fps={cameraFrames/dt:F1} gpu_busy_skips={busySkips} readbacks={callbacks} accepted={accepted} submit_rejected={submitSkips} gpu_wait_ms={gpuMs/Math.Max(1,callbacks):F2} pixels_ms={pixelsMs/Math.Max(1,callbacks):F2} jpeg_ms={jpegMs/Math.Max(1,callbacks):F2}");
+                loops = cameraFrames = busySkips = callbacks = accepted = submitSkips = 0;
+                gpuMs = pixelsMs = jpegMs = 0; perfReportAt = now;
+            }
+        } else { perfReportAt = 0; }
+
+        if (inFlight >= 2 || cameraAccess == null || !cameraAccess.IsPlaying || !cameraAccess.IsUpdatedThisFrame ||
             tracker == null || !tracker.isActiveAndEnabled) return;
         var texture = cameraAccess.GetTexture();
         long timestamp = cameraAccess.Timestamp.Ticks;
@@ -53,12 +85,16 @@ public class QuestCameraExtractor : MonoBehaviour
         string eye = cameraAccess.CameraPosition.ToString().ToLowerInvariant();
         lastTimestamp = timestamp;
         nextCaptureTicks += (Math.Floor(Math.Max(0, timestamp - nextCaptureTicks) / intervalTicks) + 1) * intervalTicks;
-        busy = true;
+        inFlight++;
         // Direct readback ordered after PCA's render-thread texture update. A blocking Blit
         // would capture the previous texture and attach the wrong image timestamp.
+        double requested = Time.realtimeSinceStartupAsDouble;
         AsyncGPUReadback.Request(texture, 0, TextureFormat.RGBA32, request => {
-            busy = false;
+            inFlight--;
             if (request.hasError || !isActiveAndEnabled) return;
+            callbacks++;
+            double pixelsStart = Time.realtimeSinceStartupAsDouble;
+            gpuMs += (pixelsStart-requested)*1000;
             var source = request.GetData<Color32>();
             if (source.Length < width * height) return;
             var rgba = new byte[width * height * 4];
@@ -72,23 +108,60 @@ public class QuestCameraExtractor : MonoBehaviour
                 rgba[p * 4 + 2] = c.b; rgba[p * 4 + 3] = 255;
                 gray[p] = (byte)((77 * c.r + 150 * c.g + 29 * c.b + 128) >> 8);
             }
+            pixelsMs += (Time.realtimeSinceStartupAsDouble-pixelsStart)*1000;
             long frameId = 0;
             if (capture != null && capture.Armed) {
-                byte[] jpeg = ImageConversion.EncodeArrayToJPG(rgba, GraphicsFormat.R8G8B8A8_UNorm,
-                    (uint)width, (uint)height, (uint)(width * 4), 90);
-                if (!capture.Submit(timestamp, jpeg, width, height, eye, fx, fy, cx, cy,
-                                    cameraPose, out frameId)) return;
+                // Reserve the skeleton bracket now; delayed JPEG completion must not
+                // query a later skeleton or overwrite another frame's metadata.
+                if (!capture.Submit(timestamp, null, width, height, eye, fx, fy, cx, cy,
+                                    cameraPose, out frameId)) { submitSkips++; return; }
+                accepted++;
+                long jpegFrameId = frameId;
+                Task.Run(() => {
+                    var timer = System.Diagnostics.Stopwatch.StartNew();
+                    try {
+                        byte[] jpeg = ImageConversion.EncodeArrayToJPG(rgba, GraphicsFormat.R8G8B8A8_UNorm,
+                            (uint)width, (uint)height, (uint)(width * 4), 90);
+                        double ms = timer.Elapsed.TotalMilliseconds;
+                        UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                            jpegMs += ms;
+                            if (capture != null) capture.CompleteJpeg(jpegFrameId, jpeg);
+                        });
+                    } catch (Exception error) {
+                        UnityMainThreadDispatcher.Instance().Enqueue(() => {
+                            Debug.LogError("[Warp] JPEG encode failed: " + error.Message);
+                            if (capture != null) capture.RejectPending(jpegFrameId);
+                        });
+                    }
+                });
             }
             Process(gray, width, height, fx, fy, cx, cy, cameraPose, frameId, timestamp);
         });
     }
 
-    unsafe void Process(byte[] gray, int width, int height, double fx, double fy, double cx,
-                        double cy, Pose pose, long frameId, long timestamp) {
+    void Process(byte[] gray, int width, int height, double fx, double fy, double cx,
+                 double cy, Pose pose, long frameId, long timestamp) {
+        if (frameId == 0) {
+            ProcessDirect(gray,width,height,fx,fy,cx,cy,pose,frameId,timestamp); return;
+        }
+        if (detectionQueue.Count >= 8) { capture.FailCapture("AprilTag processing cannot sustain camera rate"); return; }
+        detectionQueue.Enqueue(new DetectionWork { gray=gray,width=width,height=height,
+            fx=fx,fy=fy,cx=cx,cy=cy,pose=pose,frameId=frameId,timestamp=timestamp });
+        TryDetection();
+    }
+
+    void TryDetection() {
+        if (detectionQueue.Count == 0) return;
+        var job = detectionQueue.Peek();
+        if (ProcessDirect(job.gray,job.width,job.height,job.fx,job.fy,job.cx,job.cy,
+                          job.pose,job.frameId,job.timestamp)) detectionQueue.Dequeue();
+    }
+
+    unsafe bool ProcessDirect(byte[] gray, int width, int height, double fx, double fy,
+                              double cx, double cy, Pose pose, long frameId, long timestamp) {
         fixed (byte* ptr = gray) {
-            bool accepted = tracker.ProcessRawCameraFrame((IntPtr)ptr, width, height, width,
-                fx, fy, cx, cy, pose, frameId, timestamp);
-            if (!accepted && frameId != 0 && capture != null) capture.RejectPending();
+            return tracker.ProcessRawCameraFrame((IntPtr)ptr,width,height,width,
+                fx,fy,cx,cy,pose,frameId,timestamp);
         }
     }
 }

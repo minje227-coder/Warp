@@ -142,3 +142,30 @@ After Saved, the connection and receiver stay open by default. Press volume up
 again to start another take in the next date/number folder. Each take resets its
 video timeline and reassembler without changing or overwriting the previous take.
 Use --max-episodes 1 to retain the old single-take command behavior.
+
+
+## Capture v2: asynchronous tags and native pose target time
+
+RGB+skeleton WRP1 messages carry version=2 and tag_detection_pending=true.
+AprilTag completion is sent separately as WRT1 fragments on the same ordered
+channel, including an empty tags array for a completed frame with no detections.
+lab6 joins exact source frame_id AND camera timestamp; either arrival order is
+accepted. A missing/duplicate/conflicting result or a backlog beyond 2 seconds
+fails the take. Incoming camera frames never wait for tag transmission in Quest.
+The Quest detector runs an ordered bounded queue; JPEG encoding runs separately.
+Stop halts new acquisition but lets accepted JPEG/tag work drain before Saved.
+
+Skeleton sample timestamp comes from MetaSourceDataProvider.BodyState.Time,
+the target time associated with the pose. It is mapped using the headset UTC
+clock sampled around OVRPlugin.GetTimeInSeconds(), retaining query_start_ticks,
+query_end_ticks, body_state_time_seconds and ovr_clock_seconds. A query bracket
+longer than 2 ms or a native clock mismatch beyond 0.5 seconds rejects the sample.
+Interpolation uses these mapped target times around each camera capture.
+This is software alignment of estimated body poses, not proof of simultaneous
+sensor exposure or independently measured sensor latency.
+
+Measured baseline on 2026-10-12 take 8: 175 unique inputs over 15.07 seconds,
+11.55 fps, JPEG 18.1-18.3 ms, pixel conversion 6.76 ms, camera readback wait
+15.4-16.1 ms, old one-frame AprilTag wait 38.1-40.2 ms. About 45-47 attempts
+per 5 seconds were rejected while one frame was pending. These measurements
+precede async tags/native time changes; a new physical measurement is required.

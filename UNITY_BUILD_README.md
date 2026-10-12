@@ -179,3 +179,23 @@ Camera extractor schedules by camera timestamp phase. Shared output time_elapsed
 is frame_index/30 and source camera timestamps remain unchanged. Missing slots
 hold the previous complete bundle with repeated=true for all modalities.
 Unique capture FPS must be measured from source_frames, not output frames.
+
+
+Capture v2 (2026-10-12): includes native BodyState.Time mapping and independent
+WRT1 tag completion. Rebuilding must update QuestCameraExtractor.cs,
+WarpCaptureBridge.cs, BodyPoseProvider.cs AND WebRTCController.cs from the reviewed
+xrt-unified.patch. Only copying the two standalone scripts leaves the native
+clock fields/SendWarpCapture overload absent. Run receiver tests and a real
+capture after installation. 18 offline/WebRTC tests cover async ordering,
+wrong tag timestamps and false body clock mappings, including two saved takes.
+
+After lab6 reboot at 22:39, the previous build was interrupted; Library/Bee
+cache survived. Reconnect the Mac ADB server's SSH reverse relay on port 5038
+before remote installation. Quest wireless ADB was verified at 192.168.0.19:5555;
+IP can change. Use adb -H 127.0.0.1 -P 5038 -s IP:5555 shell getprop ro.product.model
+as the actual connection check. Initial Wi-Fi ADB enablement required USB and
+headset approval. Current conservative rebuild uses BEE_BUILD_THREADS=1.
+Prepared project has hydrated LFS binaries, but main vendor tree still contained
+LFS pointers; fresh prepare failed on BackSound.wav. Preserve prepared binaries.
+For a source-only edit, validate the patch against pinned C# sources and refresh
+only changed scripts in the cached project; do not overwrite assets with pointers.

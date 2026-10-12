@@ -1,24 +1,37 @@
 diff --git a/Assets/Plugins/Android/BodyPoseProvider.cs b/Assets/Plugins/Android/BodyPoseProvider.cs
-index ddf6eb4..034ecae 100644
 --- a/Assets/Plugins/Android/BodyPoseProvider.cs
 +++ b/Assets/Plugins/Android/BodyPoseProvider.cs
-@@ -28,6 +28,7 @@ public class BodyPoseProvider : MonoBehaviour
+@@ -28,6 +28,9 @@
      public class PoseData
      {
          public float timestamp;
 +        public long timestampTicks;
++        public long queryStartTicks, queryEndTicks;
++        public double bodyStateTimeSeconds, ovrClockSeconds;
          public List<BoneData> bones = new List<BoneData>();
      }
      #endregion
-@@ -90,6 +91,7 @@ public class BodyPoseProvider : MonoBehaviour
+@@ -90,6 +93,19 @@
  
          // 2. FETCH the skeleton pose first. This is the most important change.
          var skeletonPose = sourceDataProvider.GetSkeletonPose();
-+        long sampleTimestamp = DateTime.UtcNow.Ticks;
++        var metaProvider = sourceDataProvider as MetaSourceDataProvider;
++        var state = metaProvider != null ? metaProvider.BodyState : null;
++        if (!state.HasValue || state.Value.Time <= 0) return;
++        // Preserve the pose's target time instead of relabelling it as query time.
++        long queryStart = DateTime.UtcNow.Ticks;
++        double ovrNow = OVRPlugin.GetTimeInSeconds();
++        long queryEnd = DateTime.UtcNow.Ticks;
++        if (ovrNow <= 0 || queryEnd < queryStart || queryEnd-queryStart > 20000 ||
++            Math.Abs(state.Value.Time-ovrNow) > 0.5) return;
++        long sampleTimestamp = queryStart + (queryEnd-queryStart)/2 +
++            (long)Math.Round((state.Value.Time-ovrNow)*TimeSpan.TicksPerSecond);
++        CurrentPoseData.queryStartTicks = queryStart; CurrentPoseData.queryEndTicks = queryEnd;
++        CurrentPoseData.bodyStateTimeSeconds = state.Value.Time; CurrentPoseData.ovrClockSeconds = ovrNow;
  
          // 3. NOW check for validity. The flag has been updated by the call above.
          if (!sourceDataProvider.IsPoseValid())
-@@ -100,6 +102,8 @@ public class BodyPoseProvider : MonoBehaviour
+@@ -100,6 +116,8 @@
  
          // 4. If valid, update your internal data structure.
          // The UpdatePoseData method needs to be modified to accept the fetched pose.
@@ -216,7 +229,7 @@ index 52eb85f..a40562d 100644
 +    catch (System.Exception e) { Debug.LogWarning("[Warp] Control transport: " + e.Message); return false; }
 +  }
 +
-+  public void SendWarpCapture(long frameId, byte[] payload)
++  public void SendWarpCapture(long frameId, byte[] payload, bool tagResult = false)
 +  {
 +    const int chunkBytes = 12000; // Below SCTP message limits; drop whole frames before queuing.
 +    if (warpCaptureChannel == null || warpCaptureChannel.ReadyState != RTCDataChannelState.Open ||
@@ -226,7 +239,7 @@ index 52eb85f..a40562d 100644
 +      for (int i = 0; i < count; i++) {
 +        int size = System.Math.Min(chunkBytes, payload.Length - i * chunkBytes);
 +        using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
-+          writer.Write(new byte[] { 87, 82, 80, 49 }); // WRP1
++          writer.Write(new byte[] { 87, 82, (byte)(tagResult ? 84 : 80), 49 }); // WRP1 / WRT1
 +          writer.Write(frameId); writer.Write(i); writer.Write(count); writer.Write(payload.Length);
 +          writer.Write(payload, i * chunkBytes, size);
 +          warpCaptureChannel.Send(stream.ToArray());

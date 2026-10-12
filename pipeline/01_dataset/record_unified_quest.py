@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import time
-from unified_capture import BundleWriter, Reassembler
+from unified_capture import BundleWriter, Reassembler, TagJoiner
 from validate_csv import inspect_csv
 
 def parse_args(argv=None):
@@ -57,6 +57,8 @@ async def capture(args):
     folder = reserve_episode(args.out_root)
     writer = BundleWriter(folder, fps=args.rgb_fps)
     assembler = Reassembler()
+    tag_assembler = Reassembler(magic=b'WRT1', metadata_only=True)
+    tag_joiner = TagJoiner()
     write_queue = asyncio.Queue(maxsize=8)
     app = FastAPI()
     peers = set()
@@ -93,7 +95,8 @@ async def capture(args):
         nonlocal final_metadata, error, completed_episodes, stopping, requested_at, first, last
         await write_queue.join()
         await asyncio.to_thread(writer.close)
-        if assembler.pending: error = error or 'Incomplete RGB bundle at stop'
+        if assembler.pending or tag_assembler.pending or tag_joiner.pending:
+            error = error or 'Incomplete RGB/AprilTag bundle at stop'
         summary = inspect_csv(folder / 'body.csv', min_frames=args.min_frames, strict_sew=True)
         video = None
         if writer.source_frames >= args.min_frames and not error and summary['ok']:
@@ -102,10 +105,10 @@ async def capture(args):
         success = not error and summary['ok'] and writer.source_frames >= args.min_frames
         final_metadata = {'session':session, 'episode_date':folder.parent.name,
             'episode_number':int(folder.name), 'status':'complete' if success else 'failed','error':error,
-            'capture_protocol':'warp_capture_v1','rgb_required':True,
+            'capture_protocol':'warp_capture_v2' if writer.protocol_version == 2 else 'warp_capture_v1','rgb_required':True,
             'streams_captured':['body_pose_bones','rgb','apriltag'],
             'clock':'quest_utc_ticks_100ns','timestamp_owner':'camera SDK capture timestamp',
-            'skeleton_time_source':'provider_query_utc','alignment':'interpolated_between_provider_samples',
+            'skeleton_time_source':writer.skeleton_time_source,'alignment':'interpolated_between_provider_samples',
             'max_bracket_distance_ms':50,'shared_frames':writer.frames,
             'tag_detections':writer.tag_detections,'hardware_synchronized':False,
             'recording_fps':args.rgb_fps,'timestep_s':1 / args.rgb_fps,
@@ -143,18 +146,21 @@ async def capture(args):
             arm()
             @channel.on('message')
             def receive(packet):
-                nonlocal error, first, last, requested_at, stopping, stop_at, writer, folder, assembler, final_metadata, session
+                nonlocal error, first, last, requested_at, stopping, stop_at, writer, folder, assembler, final_metadata, session, tag_assembler, tag_joiner
                 if error: return
                 try:
                     # Unity RTCDataChannel.Send(byte[]) produces binary SCTP messages.
                     if packet in (b'WARP_REQUEST_START', b'WARP_REQUEST_STOP'):
                         packet = packet.decode('ascii')
+                    if packet == b'WARP_CAPTURE_ERROR': raise ValueError('Quest capture processing backlog/error')
                     if packet == 'WARP_REQUEST_START':
                         if requested_at is None and not stopping:
                             if final_metadata is not None:
                                 folder = reserve_episode(args.out_root)
                                 writer = BundleWriter(folder, fps=args.rgb_fps)
                                 assembler = Reassembler()
+                                tag_assembler = Reassembler(magic=b'WRT1', metadata_only=True)
+                                tag_joiner = TagJoiner()
                                 final_metadata = None
                                 session = args.session or datetime.now(timezone.utc).strftime('take_%Y%m%dT%H%M%SZ')
                                 print('Episode:', folder, flush=True)
@@ -166,13 +172,19 @@ async def capture(args):
                         return
                     if requested_at is None:
                         raise ValueError('Capture data arrived before volume-up start')
-                    bundle = assembler.feed(packet)
+                    is_tag = isinstance(packet,bytes) and packet[:4] == b'WRT1'
+                    bundle = (tag_assembler if is_tag else assembler).feed(packet)
                     if bundle is not None:
-                        write_queue.put_nowait(bundle)
-                        last = time.monotonic()
-                        if first is None:
-                            first = last
-                            print('RGB + aligned Skeleton + AprilTag: first shared timestamp received.', flush=True)
+                        meta, jpeg = bundle
+                        if is_tag: bundles = tag_joiner.feed(meta)
+                        elif meta.get('version') == 2: bundles = tag_joiner.feed(meta,jpeg)
+                        else: bundles = [bundle] # Preserve legacy capture protocol compatibility.
+                        for ready in bundles:
+                            write_queue.put_nowait(ready)
+                            last = time.monotonic()
+                            if first is None:
+                                first = last
+                                print('RGB + aligned Skeleton + AprilTag: first shared timestamp received.', flush=True)
                 except Exception as exc:
                     error = f'{type(exc).__name__}: {exc}'; state('error'); server.should_exit = True
         try:
@@ -188,6 +200,9 @@ async def capture(args):
         report = time.monotonic()
         while not server.should_exit:
             now = time.monotonic()
+            try: tag_joiner.expire()
+            except ValueError as exc:
+                error = str(exc); state('error'); server.should_exit = True; return
             if not channels and now - start > args.wait_seconds:
                 error = 'No unified capture bundle. The existing APK must be rebuilt with RGB/shared timestamps.'
                 server.should_exit = True

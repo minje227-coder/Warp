@@ -15,7 +15,9 @@ MAX_BYTES = 8 * 1024 * 1024
 TICKS_PER_SECOND = 10_000_000
 
 class Reassembler:
-    def __init__(self):
+    def __init__(self, magic=b'WRP1', metadata_only=False):
+        self.magic = magic
+        self.metadata_only = metadata_only
         self.pending = {}
         self.last_id = 0
 
@@ -24,7 +26,7 @@ class Reassembler:
             raise ValueError('Invalid capture packet')
         magic, frame_id, index, count, total = HEADER.unpack_from(packet)
         chunk = packet[HEADER.size:]
-        if magic != b'WRP1' or not 0 < total <= MAX_BYTES or frame_id <= 0:
+        if magic != self.magic or not 0 < total <= MAX_BYTES or frame_id <= 0:
             raise ValueError('Invalid capture header')
         if count != (total + CHUNK_BYTES - 1) // CHUNK_BYTES or not 0 <= index < count:
             raise ValueError('Invalid capture fragmentation')
@@ -50,15 +52,16 @@ class Reassembler:
         self.last_id = frame_id
         if len(raw) < 4: raise ValueError('Missing capture metadata')
         length, = struct.unpack_from('<i', raw)
-        if not 0 < length < len(raw) - 4: raise ValueError('Invalid metadata length')
+        if not 0 < length <= len(raw) - 4 or (not self.metadata_only and length == len(raw)-4):
+            raise ValueError('Invalid metadata length')
         meta = json.loads(raw[4:4 + length])
         if meta.get('frame_id') != frame_id: raise ValueError('Frame ID mismatch')
         return meta, raw[4 + length:]
 
-def validate_bundle(meta, jpeg=None):
-    if meta.get('version') != 1 or meta.get('clock') != 'quest_utc_ticks_100ns':
+def validate_bundle(meta, jpeg=None, allow_tag_pending=False):
+    if meta.get('version') not in (1,2) or meta.get('clock') != 'quest_utc_ticks_100ns':
         raise ValueError('Unsupported shared clock/protocol')
-    if meta.get('skeleton_time_source') != 'provider_query_utc' or meta.get('alignment') != 'interpolated_between_provider_samples':
+    if meta.get('skeleton_time_source') not in ('provider_query_utc','ovr_body_state_time_mapped_to_quest_utc') or meta.get('alignment') != 'interpolated_between_provider_samples':
         raise ValueError('Unknown skeleton timing provenance')
     timestamp = meta['timestamp_ticks']
     before, after = meta['before'], meta['after']
@@ -67,10 +70,11 @@ def validate_bundle(meta, jpeg=None):
     if not (before['timestamp_ticks'] <= timestamp <= after['timestamp_ticks']) or \
             max(timestamp - before['timestamp_ticks'], after['timestamp_ticks'] - timestamp) > 500000:
         raise ValueError('Skeleton does not bracket camera capture within 50 ms')
-    if meta.get('tag_family') != 'tag36h11' or not isinstance(meta.get('tags'), list):
+    tag_pending = allow_tag_pending and meta.get('version') == 2 and meta.get('tag_detection_pending') is True
+    if meta.get('tag_family') != 'tag36h11' or (not tag_pending and not isinstance(meta.get('tags'), list)):
         raise ValueError('AprilTag detection not completed for this frame')
     if meta.get('eye') not in ('left','right'): raise ValueError('Unknown physical camera eye')
-    for tag in meta['tags']:
+    for tag in (meta.get('tags') or []):
         for key, coordinates in (('position','xyz'),('rotation','xyzw')):
             if not all(math.isfinite(tag[key][axis]) for axis in coordinates):
                 raise ValueError('Non-finite AprilTag pose')
@@ -83,6 +87,17 @@ def validate_bundle(meta, jpeg=None):
     for name in ('fx', 'fy', 'cx', 'cy'):
         if not math.isfinite(meta[name]): raise ValueError('Invalid intrinsics')
     if meta['fx'] <= 0 or meta['fy'] <= 0: raise ValueError('Unavailable intrinsics')
+    if meta.get('version') == 2:
+        if meta.get('skeleton_time_source') != 'ovr_body_state_time_mapped_to_quest_utc':
+            raise ValueError('V2 skeleton must preserve native pose target time')
+        for sample in (before, after):
+            left, right = sample['query_start_ticks'], sample['query_end_ticks']
+            target, now = sample['body_state_time_seconds'], sample['ovr_clock_seconds']
+            if not (0 <= right-left <= 20000) or not all(math.isfinite(t) and t > 0 for t in (target,now)) or abs(target-now) > 0.5:
+                raise ValueError('Unqualified OVR pose clock mapping')
+            mapped = left + (right-left)//2 + round((target-now)*TICKS_PER_SECOND)
+            if abs(sample['timestamp_ticks']-mapped) > 2:
+                raise ValueError('Skeleton timestamp differs from native pose target time')
     bones = meta['bones']
     if not bones or len(bones) != len(before['bones']) or len(bones) != len(after['bones']):
         raise ValueError('Incomplete skeleton')
@@ -103,6 +118,47 @@ def validate_bundle(meta, jpeg=None):
             if not math.isclose(bone['position'][axis], expected, abs_tol=1e-5):
                 raise ValueError('Skeleton interpolation mismatch')
 
+class TagJoiner:
+    """Join asynchronous derived tag results using exact source frame/time identity."""
+    def __init__(self):
+        self.pending = {}
+        self.last_id = 0
+        self.last_camera_id = 0
+
+    def expire(self):
+        now = time.monotonic()
+        if len(self.pending) > 64 or any(now-record['created'] > 2 for record in self.pending.values()):
+            raise ValueError('RGB/AprilTag completion backlog exceeded limit')
+
+    def feed(self, meta, jpeg=None):
+        self.expire()
+        frame_id = meta['frame_id']
+        if frame_id <= self.last_id: raise ValueError('Duplicate completed source frame')
+        record = self.pending.setdefault(frame_id, {'created':time.monotonic()})
+        if jpeg is not None:
+            validate_bundle(meta, jpeg, allow_tag_pending=True)
+            if frame_id <= self.last_camera_id or 'camera' in record: raise ValueError('Duplicate camera frame')
+            self.last_camera_id = frame_id
+            record['camera'] = meta, jpeg
+        else:
+            if 'tag' in record: raise ValueError('Duplicate AprilTag completion')
+            if meta.get('error') or meta.get('clock') != 'quest_utc_ticks_100ns' or meta.get('tag_family') != 'tag36h11' or not isinstance(meta.get('tags'), list):
+                raise ValueError('Invalid AprilTag completion')
+            record['tag'] = meta
+        ready = []
+        while self.pending:
+            key = min(self.pending)
+            record = self.pending[key]
+            if 'camera' not in record or 'tag' not in record: break
+            camera, jpeg = record['camera']; tag = record['tag']
+            if camera['timestamp_ticks'] != tag['timestamp_ticks']:
+                raise ValueError('AprilTag result belongs to another camera timestamp')
+            camera = dict(camera, tags=tag['tags'], tag_detection_pending=False)
+            validate_bundle(camera,jpeg)
+            ready.append((camera,jpeg))
+            del self.pending[key]; self.last_id = key
+        return ready
+
 class BundleWriter:
     """Direct CFR MP4 plus the same fixed timestep for every saved modality.
 
@@ -118,6 +174,8 @@ class BundleWriter:
         self.last_timestamp = self.origin = None
         self.previous = self.video = self.stream = None
         self.closed = False
+        self.protocol_version = None
+        self.skeleton_time_source = None
         self.files = []
         self.meta_file = self._open('capture.jsonl')
         self.body = self._csv('body.csv', ['time_elapsed','data_type','id','pos_x','pos_y','pos_z',
@@ -139,6 +197,10 @@ class BundleWriter:
     def write(self, meta, jpeg):
         if self.closed: raise ValueError('Writer already closed')
         validate_bundle(meta, jpeg)
+        if self.protocol_version is not None and self.protocol_version != meta['version']:
+            raise ValueError('Capture protocol changed during a take')
+        self.protocol_version = meta['version']
+        self.skeleton_time_source = meta['skeleton_time_source']
         stamp = meta['timestamp_ticks']
         if self.last_timestamp is not None and stamp <= self.last_timestamp:
             raise ValueError('Camera timestamp regressed')

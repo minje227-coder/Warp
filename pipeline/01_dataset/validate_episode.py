@@ -13,7 +13,7 @@ def inspect_episode(folder: Path, *, min_frames=30, strict_sew=False):
     issues = list(result['messages'])
     if meta.get('status') != 'complete':
         issues.append('Episode metadata status is not complete: ' + str(meta.get('error')))
-    if meta.get('capture_protocol') == 'warp_capture_v1':
+    if meta.get('capture_protocol') in ('warp_capture_v1','warp_capture_v2'):
         try:
             from unified_capture import validate_bundle
             bundles = [json.loads(line) for line in (folder/'capture.jsonl').read_text().splitlines()]

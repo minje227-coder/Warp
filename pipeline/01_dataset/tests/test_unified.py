@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from unified_capture import HEADER, CHUNK_BYTES, Reassembler, validate_bundle, BundleWriter
+from unified_capture import HEADER, CHUNK_BYTES, Reassembler, validate_bundle, BundleWriter, TagJoiner
 from validate_csv import SEW_BONES
 from validate_episode import inspect_episode
 
@@ -25,6 +25,20 @@ def metadata(frame_id=1):
         'before':{'timestamp_ticks':stamp-100000,'bones':[bone(i,0) for i in ids]},
         'after':{'timestamp_ticks':stamp+100000,'bones':[bone(i,2) for i in ids]},
         'bones':[bone(i,1) for i in ids]}
+
+def metadata_v2(frame_id=1):
+    meta = metadata(frame_id)
+    meta.update(version=2,skeleton_time_source='ovr_body_state_time_mapped_to_quest_utc',
+                tag_detection_pending=True,tags=None)
+    for sample in (meta['before'],meta['after']):
+        sample.update(query_start_ticks=sample['timestamp_ticks']-300000,
+                      query_end_ticks=sample['timestamp_ticks']-300000,
+                      body_state_time_seconds=10.03,ovr_clock_seconds=10)
+    return meta
+
+def tag_message(meta):
+    return {'frame_id':meta['frame_id'],'timestamp_ticks':meta['timestamp_ticks'],
+            'clock':meta['clock'],'tag_family':'tag36h11','tags':[],'error':None}
 
 def packets(meta,jpeg):
     raw_json = json.dumps(meta).encode()
@@ -101,6 +115,36 @@ class UnifiedTest(unittest.TestCase):
             result = inspect_episode(root,min_frames=3,strict_sew=True)
             self.assertFalse(result['ok']); self.assertIn('timestamps disagree',' '.join(result['messages']))
 
+class AsyncTagTest(unittest.TestCase):
+    def test_tag_first_camera_first_and_out_of_order_completion(self):
+        join = TagJoiner(); jpeg = synthetic_jpeg()
+        first, second = metadata_v2(1), metadata_v2(2)
+        self.assertEqual(join.feed(first,jpeg),[])
+        self.assertEqual(join.feed(second,jpeg),[])
+        self.assertEqual(join.feed(tag_message(second)),[])
+        ready = join.feed(tag_message(first))
+        self.assertEqual([m['frame_id'] for m,_ in ready],[1,2])
+        self.assertTrue(all(m['tags']==[] and not m['tag_detection_pending'] for m,_ in ready))
+        third = metadata_v2(3)
+        self.assertEqual(join.feed(tag_message(third)),[])
+        self.assertEqual(join.feed(third,jpeg)[0][0]['timestamp_ticks'],third['timestamp_ticks'])
+
+    def test_wrong_tag_timestamp_and_false_pose_clock_fail(self):
+        jpeg = synthetic_jpeg(); meta = metadata_v2()
+        join=TagJoiner(); join.feed(meta,jpeg)
+        tag=tag_message(meta); tag['timestamp_ticks'] += 1
+        with self.assertRaisesRegex(ValueError,'another camera'): join.feed(tag)
+        meta['before']['body_state_time_seconds'] += .01
+        with self.assertRaisesRegex(ValueError,'native pose target'): validate_bundle(meta,jpeg,allow_tag_pending=True)
+
+    def test_tag_only_fragmentation(self):
+        message=tag_message(metadata_v2())
+        chunks=[b'WRT1'+p[4:] for p in packets(message,b'')]
+        reassembler=Reassembler(magic=b'WRT1',metadata_only=True)
+        result=None
+        for packet in chunks: result=reassembler.feed(packet) or result
+        self.assertEqual(result,(message,b''))
+
 class EpisodeStorageTest(unittest.TestCase):
     def test_daily_numbering_preserves_data_and_handles_concurrent_reservations(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -163,7 +207,9 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(recording.wait(),5)
                 jpeg = synthetic_jpeg()
                 for i in range(1,4):
-                    for packet in packets(metadata(i),jpeg): channel.send(packet)
+                    for packet in packets(metadata_v2(i),jpeg): channel.send(packet)
+                    await asyncio.sleep(0.03)
+                    for packet in packets(tag_message(metadata_v2(i)),b''): channel.send(b'WRT1'+packet[4:])
                     await asyncio.sleep(0.1)
                 channel.send(b'WARP_REQUEST_STOP')
                 await asyncio.wait_for(saved.wait(),8)
@@ -172,7 +218,9 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
                 channel.send(b'WARP_REQUEST_START')
                 await asyncio.wait_for(recording.wait(),5)
                 for i in range(1,4):
-                    for packet in packets(metadata(i),jpeg): channel.send(packet)
+                    for packet in packets(metadata_v2(i),jpeg): channel.send(packet)
+                    await asyncio.sleep(0.03)
+                    for packet in packets(tag_message(metadata_v2(i)),b''): channel.send(b'WRT1'+packet[4:])
                     await asyncio.sleep(0.1)
                 channel.send(b'WARP_REQUEST_STOP')
                 self.assertEqual(await asyncio.wait_for(server,8),0)

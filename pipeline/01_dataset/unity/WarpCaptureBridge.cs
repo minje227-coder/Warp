@@ -8,12 +8,15 @@ public class WarpCaptureBridge : MonoBehaviour
 {
     [Serializable] public class Sample {
         public long timestamp_ticks;
+        public long query_start_ticks, query_end_ticks;
+        public double body_state_time_seconds, ovr_clock_seconds;
         public BodyPoseProvider.BoneData[] bones;
     }
     [Serializable] public class Bundle {
-        public int version = 1;
+        public int version = 2;
         public string clock = "quest_utc_ticks_100ns";
-        public string skeleton_time_source = "provider_query_utc";
+        public string skeleton_time_source = "ovr_body_state_time_mapped_to_quest_utc";
+        public bool tag_detection_pending = true;
         public string alignment = "interpolated_between_provider_samples";
         public long frame_id, timestamp_ticks;
         public int width, height;
@@ -25,7 +28,13 @@ public class WarpCaptureBridge : MonoBehaviour
         public BodyPoseProvider.BoneData[] bones;
         public QuestAprilTagTracker.TagResult[] tags;
     }
+    [Serializable] class TagMessage {
+        public long frame_id, timestamp_ticks;
+        public string clock = "quest_utc_ticks_100ns", tag_family = "tag36h11", error;
+        public QuestAprilTagTracker.TagResult[] tags;
+    }
     public bool Armed { get; private set; }
+    public bool Draining { get; private set; }
     public WebRTCController controller;
     [Serializable] class Command {
         public string type, state;
@@ -40,12 +49,14 @@ public class WarpCaptureBridge : MonoBehaviour
     BodyPoseProvider body;
     QuestCameraExtractor camera;
     QuestAprilTagTracker tracker;
-    Bundle pending;
-    byte[] pendingJpeg;
+    class PendingFrame { public Bundle bundle; public byte[] jpeg; public double submittedAt; }
+    readonly SortedDictionary<long, PendingFrame> pending = new SortedDictionary<long, PendingFrame>();
     long nextFrame;
+    double pendingTotalMs, perfAt;
+    int pendingCount, rejectedBusy, rejectedBracket;
 
     public void SetArmed(bool armed) {
-        Armed = armed; pending = null; pendingJpeg = null;
+        Armed = armed; Draining = false; pending.Clear();
         if (!armed && status != null) status.SetClean(false);
     }
 
@@ -59,9 +70,10 @@ public class WarpCaptureBridge : MonoBehaviour
         } else if (command.type == "state") {
             waitingForAck = false;
             if (command.state == "recording") {
-                Armed = true; status.SetClean(cleanView); status.SetState("Recording");
+                Armed = true; Draining = false; terminalState = false; status.SetClean(cleanView); status.SetState("Recording");
             } else {
-                Armed = false; pending = null; pendingJpeg = null;
+                Armed = false; Draining = command.state == "saving";
+                if (!Draining) pending.Clear();
                 status.SetState(command.state == "saving" ? "Saving…" :
                     command.state == "saved" ? "Saved" : "Recording error");
                 if (command.state != "saving") status.SetClean(false);
@@ -96,11 +108,14 @@ public class WarpCaptureBridge : MonoBehaviour
     void OnBody(BodyPoseProvider.PoseData pose) {
         if (pose.bones == null || pose.bones.Count == 0) return;
         long timestamp = pose.timestampTicks;
-        if (history.Count > 0 && timestamp <= history[history.Count - 1].timestamp_ticks) {
+        if (history.Count > 0 && timestamp == history[history.Count - 1].timestamp_ticks) return;
+        if (history.Count > 0 && timestamp < history[history.Count - 1].timestamp_ticks) {
             // Clock adjustment / restart: never interpolate across a clock discontinuity.
-            history.Clear(); pending = null;
+            history.Clear(); pending.Clear();
         }
-        history.Add(new Sample { timestamp_ticks = timestamp, bones = pose.bones.ToArray() });
+        history.Add(new Sample { timestamp_ticks = timestamp, bones = pose.bones.ToArray(),
+            query_start_ticks = pose.queryStartTicks, query_end_ticks = pose.queryEndTicks,
+            body_state_time_seconds = pose.bodyStateTimeSeconds, ovr_clock_seconds = pose.ovrClockSeconds });
         while (history.Count > 180) history.RemoveAt(0);
     }
 
@@ -108,7 +123,8 @@ public class WarpCaptureBridge : MonoBehaviour
                        float fx, float fy, float cx, float cy, Pose cameraPose,
                        out long frameId) {
         frameId = 0;
-        if (!Armed || pending != null || timestamp <= 0) return false;
+        if (!Armed || timestamp <= 0) return false;
+        if (pending.Count >= 4) { rejectedBusy++; return false; }
         Sample before = null, after = null;
         for (int i = 0; i < history.Count; i++) {
             if (history[i].timestamp_ticks <= timestamp) before = history[i];
@@ -118,7 +134,7 @@ public class WarpCaptureBridge : MonoBehaviour
         const long maxDistanceTicks = 500000; // 50 ms on either side
         if (before == null || after == null || timestamp - before.timestamp_ticks > maxDistanceTicks ||
             after.timestamp_ticks - timestamp > maxDistanceTicks || before.bones.Length != after.bones.Length)
-            return false;
+            { rejectedBracket++; return false; }
         var bones = new BodyPoseProvider.BoneData[before.bones.Length];
         float alpha = after.timestamp_ticks == before.timestamp_ticks ? 0 :
             (float)((double)(timestamp - before.timestamp_ticks) / (after.timestamp_ticks - before.timestamp_ticks));
@@ -131,28 +147,57 @@ public class WarpCaptureBridge : MonoBehaviour
             };
         }
         frameId = ++nextFrame;
-        pending = new Bundle { frame_id = frameId, timestamp_ticks = timestamp,
+        var bundle = new Bundle { frame_id = frameId, timestamp_ticks = timestamp,
             width = width, height = height, eye = eye, fx = fx, fy = fy, cx = cx, cy = cy,
             camera_pose = cameraPose, before = before, after = after, bones = bones,
             tag_size_m = tracker.tagSizeMeters };
-        pendingJpeg = jpeg;
+        pending.Add(frameId, new PendingFrame { bundle = bundle, jpeg = jpeg, submittedAt = Time.realtimeSinceStartupAsDouble });
         return true;
     }
 
     void OnTags(QuestAprilTagTracker.TagFrame result) {
-        if (pending == null || result.frameId != pending.frame_id || result.timestampTicks != pending.timestamp_ticks) return;
-        if (result.error == null && Armed) {
-            pending.tags = result.tags; // Empty array is a completed detection with zero tags.
-            var metadata = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(pending));
-            using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
-                writer.Write(metadata.Length); writer.Write(metadata); writer.Write(pendingJpeg);
-                controller.SendWarpCapture(pending.frame_id, stream.ToArray());
-            }
-        } else Debug.LogWarning("[Warp] Capture rejected: " + result.error);
-        pending = null; pendingJpeg = null;
+        if ((!Armed && !Draining) || result.frameId == 0) return;
+        if (pending.TryGetValue(result.frameId, out var frame)) {
+            pendingCount++; pendingTotalMs += (Time.realtimeSinceStartupAsDouble-frame.submittedAt)*1000;
+        }
+        var message = new TagMessage { frame_id=result.frameId, timestamp_ticks=result.timestampTicks,
+            tags=result.tags, error=result.error };
+        var metadata = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(message));
+        using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
+            writer.Write(metadata.Length); writer.Write(metadata);
+            controller.SendWarpCapture(result.frameId, stream.ToArray(), true);
+        }
     }
 
-    public void RejectPending() { pending = null; pendingJpeg = null; }
+    public void CompleteJpeg(long frameId, byte[] jpeg) {
+        if ((!Armed && !Draining) || !pending.TryGetValue(frameId, out var frame)) return;
+        frame.jpeg = jpeg;
+        DrainReady();
+    }
+
+    void DrainReady() {
+        while (pending.Count > 0 && (Armed || Draining)) {
+            var iterator = pending.GetEnumerator(); iterator.MoveNext();
+            var entry = iterator.Current; iterator.Dispose();
+            var frame = entry.Value;
+            if (frame.jpeg == null) return; // Tag completion is joined by lab6, never blocks RGB.
+            var metadata = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(frame.bundle));
+            using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
+                writer.Write(metadata.Length); writer.Write(metadata); writer.Write(frame.jpeg);
+                controller.SendWarpCapture(entry.Key, stream.ToArray());
+            }
+            pending.Remove(entry.Key);
+        }
+    }
+
+    public void FailCapture(string reason) {
+        Debug.LogError("[Warp] " + reason);
+        controller.SendWarpControl("WARP_CAPTURE_ERROR");
+        Armed = Draining = false; pending.Clear(); terminalState = true;
+        status.SetClean(false); status.SetState("Recording error");
+    }
+
+    public void RejectPending(long frameId) { pending.Remove(frameId); DrainReady(); }
 
     void OnDestroy() {
         if (body != null) body.OnPoseUpdated -= OnBody;
@@ -161,15 +206,19 @@ public class WarpCaptureBridge : MonoBehaviour
     }
 
     void Update() {
+        if (Armed && Time.realtimeSinceStartupAsDouble-perfAt > 5) {
+            Debug.Log($"[WarpPerf] apriltag_pending_ms={pendingTotalMs/Math.Max(1,pendingCount):F2} completed={pendingCount} pending_rejected={rejectedBusy} skeleton_bracket_rejected={rejectedBracket}");
+            pendingCount = rejectedBusy = rejectedBracket = 0; pendingTotalMs = 0; perfAt = Time.realtimeSinceStartupAsDouble;
+        }
         if (waitingForAck && Time.realtimeSinceStartupAsDouble - requestAt > 3) {
             waitingForAck = false; Armed = false;
-            terminalState = true; pending = null; pendingJpeg = null;
+            terminalState = true; pending.Clear();
             status.SetClean(false); status.SetState("Connection lost");
         }
         if (!controller.IsConnected && status != null && !terminalState) {
             bool lost = configured || Armed || waitingForAck;
             configured = false; Armed = false; waitingForAck = false;
-            pending = null; pendingJpeg = null;
+            pending.Clear();
             status.SetClean(false); status.SetState(lost ? "Connection lost" : "Preparing…");
             terminalState = lost;
         }
