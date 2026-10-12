@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Skeleton + physical Quest passthrough RGB by default; --body-only is explicit.
+# One-app shared-timestamp RGB + Skeleton + AprilTag. --body-only keeps legacy support.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ -x "$ROOT/.venv/bin/python" ]]; then
@@ -13,4 +13,9 @@ else
   exit 3
 fi
 cd "$ROOT"
-exec "$PY" pipeline/01_dataset/record_quest_body.py "$@"
+for arg in "$@"; do
+  if [[ "$arg" == "--body-only" ]]; then
+    exec "$PY" pipeline/01_dataset/record_quest_body.py "$@"
+  fi
+done
+exec "$PY" pipeline/01_dataset/record_unified_quest.py "$@"

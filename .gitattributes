@@ -1,0 +1,2 @@
+# A unified patch's context lines intentionally preserve upstream whitespace.
+pipeline/01_dataset/unity/patches/*.patch -whitespace

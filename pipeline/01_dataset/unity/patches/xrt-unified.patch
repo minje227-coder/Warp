@@ -1,0 +1,239 @@
+diff --git a/Assets/Plugins/Android/BodyPoseProvider.cs b/Assets/Plugins/Android/BodyPoseProvider.cs
+index ddf6eb4..034ecae 100644
+--- a/Assets/Plugins/Android/BodyPoseProvider.cs
++++ b/Assets/Plugins/Android/BodyPoseProvider.cs
+@@ -28,6 +28,7 @@ public class BodyPoseProvider : MonoBehaviour
+     public class PoseData
+     {
+         public float timestamp;
++        public long timestampTicks;
+         public List<BoneData> bones = new List<BoneData>();
+     }
+     #endregion
+@@ -90,6 +91,7 @@ public class BodyPoseProvider : MonoBehaviour
+ 
+         // 2. FETCH the skeleton pose first. This is the most important change.
+         var skeletonPose = sourceDataProvider.GetSkeletonPose();
++        long sampleTimestamp = DateTime.UtcNow.Ticks;
+ 
+         // 3. NOW check for validity. The flag has been updated by the call above.
+         if (!sourceDataProvider.IsPoseValid())
+@@ -100,6 +102,8 @@ public class BodyPoseProvider : MonoBehaviour
+ 
+         // 4. If valid, update your internal data structure.
+         // The UpdatePoseData method needs to be modified to accept the fetched pose.
++        if (!skeletonPose.IsCreated || skeletonPose.Length != CurrentPoseData.bones.Count) return;
++        CurrentPoseData.timestampTicks = sampleTimestamp;
+         UpdatePoseData(skeletonPose);
+ 
+         // 5. Invoke the event with the fresh data.
+diff --git a/Assets/Scripts/QuestAprilTagTracker.cs b/Assets/Scripts/QuestAprilTagTracker.cs
+index e49a6ed..baf7e85 100644
+--- a/Assets/Scripts/QuestAprilTagTracker.cs
++++ b/Assets/Scripts/QuestAprilTagTracker.cs
+@@ -23,6 +23,7 @@ public class QuestAprilTagTracker : MonoBehaviour
+     private IntPtr detector;
+     private IntPtr family;
+     private volatile bool isExecutingTask = false;
++    private Task processingTask;
+ 
+     // A structure to hold the detection result queued back to the main thread
+     public struct TagResult
+@@ -41,7 +42,13 @@ public class QuestAprilTagTracker : MonoBehaviour
+     // Event you can subscribe to in WebRTCController or other scripts
+     public event Action<TagResult[]> OnTagsDetected;
+ 
+-    private ConcurrentQueue<TagResult[]> mainThreadQueue = new ConcurrentQueue<TagResult[]>();
++    public class TagFrame {
++        public long frameId, timestampTicks;
++        public TagResult[] tags;
++        public string error;
++    }
++    public event Action<TagFrame> OnFrameDetected;
++    private ConcurrentQueue<TagFrame> mainThreadQueue = new ConcurrentQueue<TagFrame>();
+     
+     // Optional callback for advanced projection (like Meta Passthrough fisheye fix)
+     public Func<Vector2, Ray> RayProjector;
+@@ -90,8 +97,11 @@ public class QuestAprilTagTracker : MonoBehaviour
+         }
+ 
+         // We dequeue results built by the background thread here
+-        while (mainThreadQueue.TryDequeue(out TagResult[] detections))
++        while (mainThreadQueue.TryDequeue(out TagFrame frame))
+         {
++            OnFrameDetected?.Invoke(frame);
++            if (frame.error != null) continue;
++            TagResult[] detections = frame.tags;
+             // Keep track of which tags were seen this frame
+             System.Collections.Generic.HashSet<int> seenTags = new System.Collections.Generic.HashSet<int>();
+ 
+@@ -197,14 +207,14 @@ public class QuestAprilTagTracker : MonoBehaviour
+     /// <summary>
+     /// Call this from your Meta XR camera frame callback (OVRManager or Passthrough layer).
+     /// </summary>
+-    public void ProcessRawCameraFrame(IntPtr yChannelBuffer, int width, int height, int stride, double fx, double fy, double cx, double cy, Pose cameraHeadPose)
++    public bool ProcessRawCameraFrame(IntPtr yChannelBuffer, int width, int height, int stride, double fx, double fy, double cx, double cy, Pose cameraHeadPose, long frameId = 0, long timestampTicks = 0)
+     {
+         // Don't process if the script/GameObject is disabled in the Unity Inspector
+-        if (!this.isActiveAndEnabled) return;
++        if (!this.isActiveAndEnabled) return false;
+ 
+ #if (UNITY_ANDROID && !UNITY_EDITOR) || UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+         // Skip if the background thread is still busy processing a prior frame
+-        if (isExecutingTask) return;
++        if (isExecutingTask || detector == IntPtr.Zero) return false;
+ 
+         isExecutingTask = true;
+ 
+@@ -219,8 +229,9 @@ public class QuestAprilTagTracker : MonoBehaviour
+         }
+         Marshal.Copy(yChannelBuffer, rawImageBuffer, 0, bufferSize);
+ 
++        float frameTagSize = tagSizeMeters;
+         // Spin up a background task
+-        Task.Run(() =>
++        processingTask = Task.Run(() =>
+         {
+             try
+             {
+@@ -247,7 +258,7 @@ public class QuestAprilTagTracker : MonoBehaviour
+                     apriltag_detection_info_t info = new apriltag_detection_info_t
+                     {
+                         det = detPointers[i],
+-                        tagsize = tagSizeMeters,
++                        tagsize = frameTagSize,
+                         fx = fx,
+                         fy = fy,
+                         cx = cx,
+@@ -299,7 +310,7 @@ public class QuestAprilTagTracker : MonoBehaviour
+                             id = detStructs[i].id,
+                             position = position,
+                             rotation = rotation,
+-                            rawLocalPosition = pose.t != IntPtr.Zero ? new Vector3((float)Marshal.PtrToStructure<matd_t>(pose.t).data, 0, 0) : Vector3.zero, // Filled properly below
++                            rawLocalPosition = Vector3.zero, // Filled properly below
+                             centerPixel = new Vector2((float)detStructs[i].c[0], (float)detStructs[i].c[1]),
+                             frameWidth = width,
+                             frameHeight = height,
+@@ -324,17 +335,21 @@ public class QuestAprilTagTracker : MonoBehaviour
+                 AprilTagNative.apriltag_detections_destroy(zarrayPtr);
+ 
+                 // Queue to main thread
+-                mainThreadQueue.Enqueue(results);
++                mainThreadQueue.Enqueue(new TagFrame { frameId = frameId, timestampTicks = timestampTicks, tags = results });
+             }
+             catch (Exception e)
+             {
+                 Debug.LogError($"[AprilTag] Background detection error: {e.Message}");
++                mainThreadQueue.Enqueue(new TagFrame { frameId = frameId, timestampTicks = timestampTicks, error = e.Message });
+             }
+             finally
+             {
+                 isExecutingTask = false;
+             }
+         });
++        return true;
++#else
++        return false;
+ #endif
+     }
+ 
+@@ -343,7 +358,7 @@ public class QuestAprilTagTracker : MonoBehaviour
+         if (isPaused)
+         {
+             // Reset task flag in case the thread was suspended/aborted by the OS when the keyboard opened
+-            isExecutingTask = false;
++            // Keep the buffer owned by the running task across pause/resume.
+         }
+     }
+ 
+@@ -358,6 +373,8 @@ public class QuestAprilTagTracker : MonoBehaviour
+ 
+     void OnDestroy()
+     {
++        // A worker owns the pinned buffer and detector until it finishes.
++        if (processingTask != null) processingTask.GetAwaiter().GetResult();
+         if (pinnedBuffer.IsAllocated)
+             pinnedBuffer.Free();
+ 
+diff --git a/Assets/Scripts/WebRTCController.cs b/Assets/Scripts/WebRTCController.cs
+index 52eb85f..a40562d 100644
+--- a/Assets/Scripts/WebRTCController.cs
++++ b/Assets/Scripts/WebRTCController.cs
+@@ -63,6 +63,8 @@ public class WebRTCController : MonoBehaviour
+ 
+   private RTCPeerConnection pc;
+   private RTCDataChannel cameraChannel;
++  private RTCDataChannel warpCaptureChannel;
++  private WarpCaptureBridge warpCapture;
+   private RTCDataChannel bodyPoseChannel;
+   private RTCDataChannel aprilTagChannel;
+   private RTCDataChannel unityStateChannel;
+@@ -161,6 +163,8 @@ public class WebRTCController : MonoBehaviour
+ 
+   void Start()
+   {
++    warpCapture = gameObject.AddComponent<WarpCaptureBridge>();
++    warpCapture.controller = this;
+     string savedUrl = PlayerPrefs.GetString("serverUrl");
+     if (!string.IsNullOrEmpty(savedUrl))
+     {
+@@ -443,6 +447,8 @@ public class WebRTCController : MonoBehaviour
+       pc.Close();
+       pc = null;
+     }
++    if (warpCapture != null) warpCapture.SetArmed(false);
++    if (warpCaptureChannel != null) { warpCaptureChannel.Close(); warpCaptureChannel = null; }
+     _teleopActive = false;
+     statusText.text = "Disconnected.";
+     Debug.Log("WebRTC connection closed.");
+@@ -584,6 +590,17 @@ public void ToggleVideoStream(bool isOn)
+       videoTransceiver.Direction = RTCRtpTransceiverDirection.RecvOnly;
+     }
+ 
++    // Dataset capture is a distinct, receiver-armed channel. It does not enable robot teleop.
++    warpCaptureChannel = pc.CreateDataChannel("warp_capture", new RTCDataChannelInit { ordered = true });
++    warpCaptureChannel.OnMessage = bytes => {
++      string command = System.Text.Encoding.UTF8.GetString(bytes);
++      UnityMainThreadDispatcher.Instance().Enqueue(() => {
++        if (warpCapture != null) warpCapture.HandleServerCommand(command);
++      });
++    };
++    warpCaptureChannel.OnClose = () => UnityMainThreadDispatcher.Instance().Enqueue(() => {
++      if (warpCapture != null) warpCapture.SetArmed(false);
++    });
+     // Create data channel
+     cameraChannel = pc.CreateDataChannel("camera");
+     SetupDataChannelEvents(cameraChannel);
+@@ -936,6 +953,32 @@ public void ToggleVideoStream(bool isOn)
+     }
+   }
+ 
++  public bool SendWarpControl(string command)
++  {
++    if (warpCaptureChannel == null || warpCaptureChannel.ReadyState != RTCDataChannelState.Open) return false;
++    try { warpCaptureChannel.Send(System.Text.Encoding.UTF8.GetBytes(command)); return true; }
++    catch (System.Exception e) { Debug.LogWarning("[Warp] Control transport: " + e.Message); return false; }
++  }
++
++  public void SendWarpCapture(long frameId, byte[] payload)
++  {
++    const int chunkBytes = 12000; // Below SCTP message limits; drop whole frames before queuing.
++    if (warpCaptureChannel == null || warpCaptureChannel.ReadyState != RTCDataChannelState.Open ||
++        payload.Length > 8 * 1024 * 1024 || warpCaptureChannel.BufferedAmount > HIGH_WATER_MARK) return;
++    int count = (payload.Length + chunkBytes - 1) / chunkBytes;
++    try {
++      for (int i = 0; i < count; i++) {
++        int size = System.Math.Min(chunkBytes, payload.Length - i * chunkBytes);
++        using (var stream = new MemoryStream()) using (var writer = new BinaryWriter(stream)) {
++          writer.Write(new byte[] { 87, 82, 80, 49 }); // WRP1
++          writer.Write(frameId); writer.Write(i); writer.Write(count); writer.Write(payload.Length);
++          writer.Write(payload, i * chunkBytes, size);
++          warpCaptureChannel.Send(stream.ToArray());
++        }
++      }
++    } catch (System.Exception e) { Debug.LogWarning("[Warp] Capture transport: " + e.Message); }
++  }
++
+   private byte[] SerializePoseData(BodyPoseProvider.PoseData poseData)
+   {
+     using (var memoryStream = new MemoryStream())
