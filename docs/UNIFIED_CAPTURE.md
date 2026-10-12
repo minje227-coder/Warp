@@ -1,6 +1,6 @@
 # One XRT app: RGB + Skeleton + AprilTag
 
-Implementation branch: `codex/unified-quest-capture`. Receiver/transport/artifact tests pass;
+Implementation branch: `main`. Receiver/transport/artifact tests pass;
 Unity compilation, APK installation, Quest volume-key dispatch, and physical alignment still require verification.
 The previously tested companion app is a legacy capture mode, not this implementation.
 

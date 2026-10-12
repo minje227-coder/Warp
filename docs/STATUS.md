@@ -1,6 +1,6 @@
 # Unified implementation: pending Quest deployment
 
-`codex/unified-quest-capture`: 기존 XRT에 shared-timestamp RGB/Skeleton/AprilTag, 볼륨 업 시작·종료, 영어 status-only HUD 구현. 실제 WebRTC software end-to-end test에서 Ready → start → save → Saved와 동일 timestamp CSV/JPEG/MP4 검증 통과. APK compilation/install, hardware volume input, frame alignment and actual tags remain unverified. See [UNIFIED_CAPTURE](UNIFIED_CAPTURE.md).
+`main`: 기존 XRT에 shared-timestamp RGB/Skeleton/AprilTag, 볼륨 업 시작·종료, 영어 status-only HUD 구현. 실제 WebRTC software end-to-end test에서 Ready → start → save → Saved와 동일 timestamp CSV/JPEG/MP4 검증 통과. APK compilation/install, hardware volume input, frame alignment and actual tags remain unverified. See [UNIFIED_CAPTURE](UNIFIED_CAPTURE.md).
 
 ---
 
