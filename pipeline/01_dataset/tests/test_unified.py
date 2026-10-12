@@ -137,13 +137,13 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
                 # Connected/ready alone cannot start recording.
                 await asyncio.sleep(0.1)
                 self.assertFalse(recording.is_set())
-                channel.send('WARP_REQUEST_START')
+                channel.send(b'WARP_REQUEST_START')
                 await asyncio.wait_for(recording.wait(),5)
                 jpeg = synthetic_jpeg()
                 for i in range(1,4):
                     for packet in packets(metadata(i),jpeg): channel.send(packet)
                     await asyncio.sleep(0.1)
-                channel.send('WARP_REQUEST_STOP')
+                channel.send(b'WARP_REQUEST_STOP')
                 self.assertEqual(await asyncio.wait_for(server,8),0)
                 states = [message.get('state') for message in received]
                 self.assertIn('saving',states); self.assertIn('saved',states)

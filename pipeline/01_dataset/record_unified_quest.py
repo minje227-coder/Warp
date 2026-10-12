@@ -105,6 +105,9 @@ async def capture(args):
                 nonlocal error, first, last, requested_at, stopping, stop_at
                 if error: return
                 try:
+                    # Unity RTCDataChannel.Send(byte[]) produces binary SCTP messages.
+                    if packet in (b'WARP_REQUEST_START', b'WARP_REQUEST_STOP'):
+                        packet = packet.decode('ascii')
                     if packet == 'WARP_REQUEST_START':
                         if requested_at is None and not stopping:
                             requested_at = time.monotonic(); state('recording')
