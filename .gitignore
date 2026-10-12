@@ -1,0 +1,40 @@
+# Sensitive recorded human/robot data, RGB videos, robot and license credentials
+/local_data/**
+!/local_data/README.md
+*.mp4
+*.mov
+*.mkv
+*.bag
+*.db3
+*.hdf5
+*.h5
+*.npz
+*.npy
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.engine
+*.pem
+*.key
+*.whl
+.env
+.env.*
+!.env.example
+**/.venv/
+**/__pycache__/
+*.pyc
+.DS_Store
+.idea/
+.vscode/
+# large generated simulator assets and caches
+checkpoints/
+runs/
+wandb/
+outputs/
+**/Library/
+**/Temp/
+**/Logs/
+**/obj/
+# Machine-specific setup choices (no hardware assumptions committed)
+/configs/local.env

@@ -1,0 +1,21 @@
+[submodule "third_party/capture/xrt-client"]
+	path = third_party/capture/xrt-client
+	url = https://github.com/yunho-c/XRT-Client.git
+[submodule "third_party/capture/xrt-devices"]
+	path = third_party/capture/xrt-devices
+	url = https://github.com/Euler-Rodrigues-Lab/XRT_devices.git
+[submodule "third_party/capture/meta-passthrough-samples"]
+	path = third_party/capture/meta-passthrough-samples
+	url = https://github.com/oculus-samples/Unity-PassthroughCameraApiSamples.git
+[submodule "third_party/retarget/rby1-teleop"]
+	path = third_party/retarget/rby1-teleop
+	url = https://github.com/Euler-Rodrigues-Lab/rby1_teleop.git
+[submodule "third_party/retarget/stereo-sew"]
+	path = third_party/retarget/stereo-sew
+	url = https://github.com/rpiRobotics/stereo-sew.git
+[submodule "third_party/retarget/ik-geo"]
+	path = third_party/retarget/ik-geo
+	url = https://github.com/rpiRobotics/ik-geo.git
+[submodule "third_party/gripper/robowheel-toolkits"]
+	path = third_party/gripper/robowheel-toolkits
+	url = https://github.com/zhangyuhong01/Robowheel-Toolkits.git
