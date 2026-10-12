@@ -31,13 +31,14 @@ diff --git a/Assets/Scripts/QuestAprilTagTracker.cs b/Assets/Scripts/QuestAprilT
 index e49a6ed..baf7e85 100644
 --- a/Assets/Scripts/QuestAprilTagTracker.cs
 +++ b/Assets/Scripts/QuestAprilTagTracker.cs
-@@ -23,6 +23,7 @@ public class QuestAprilTagTracker : MonoBehaviour
+@@ -23,6 +23,8 @@ public class QuestAprilTagTracker : MonoBehaviour
      private IntPtr detector;
      private IntPtr family;
      private volatile bool isExecutingTask = false;
 +    private Task processingTask;
  
      // A structure to hold the detection result queued back to the main thread
++    [Serializable]
      public struct TagResult
 @@ -41,7 +42,13 @@ public class QuestAprilTagTracker : MonoBehaviour
      // Event you can subscribe to in WebRTCController or other scripts

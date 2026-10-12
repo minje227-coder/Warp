@@ -1,7 +1,7 @@
 # Unity APK build on lab6
 
 XRT-Client Warp의 빌드 작업은 **lab6의 main**에서 한다. Mac은 Quest USB 연결을 전달하는 용도로만 사용한다.
-최초 작성: 2026-10-12. 현재 첫 APK 재빌드 중이며, 성공/설치/실물 검증은 아래 명령의 실제 결과로 판단한다.
+최초 작성: 2026-10-12. 첫 APK 빌드와 Quest 설치/실행은 성공했다. 실제 볼륨 업으로 프레임을 전송했으나 AprilTag JSON 누락으로 수신기가 거절했고, 이를 수정해 재빌드 중이다. 실물 녹화 완료는 별도로 검증한다.
 
 ## 이미 설치된 환경: 다시 다운로드하지 말 것
 
@@ -36,7 +36,7 @@ free -h
 
 lab6은 RAM 16 GiB이고 다른 프로세스도 사용한다. 먼저 available 메모리를 확인한다.
 2026-10-12에는 swap 2 GiB가 이미 가득 차 있었고, 네이티브 컴파일 중 OOM으로 Unity가 종료되었다.
-**BEE_BUILD_THREADS=4**를 빌드 프로세스에 설정한다. available 메모리가 부족하면 2로 더 줄인다.
+**BEE_BUILD_THREADS=2**를 빌드 프로세스에 설정한다. available 메모리가 부족하면 2로 더 줄인다.
 `-job-worker-count 2`만으로 Bee의 C++ 동시 컴파일 수가 제한되지는 않는다.
 다른 사람의 Python/학습 프로세스를 종료하지 않는다.
 
@@ -50,7 +50,7 @@ Mac 로그인 상태가 lab6 로그인 상태를 대신하지 않는다.
 prepared Assets가 현재 main과 일치할 때 사용하는 명령이다. 변경된 C#/Java/patch가 있다면 다음 절차로 갱신한 뒤 빌드한다.
 
 ```bash
-env BEE_BUILD_THREADS=4 \
+env BEE_BUILD_THREADS=2 \
   WARP_APK_OUTPUT=/home/lab6/Warp-unified-build/.venv/android-build/xrt-unified.apk \
   WARP_APPLICATION_ID=com.GTSafeRoboticsLab.xrteleopclient.warp \
   /home/lab6/.cache/warp-unity/bin/unity build \
@@ -108,7 +108,8 @@ python3 scripts/01_capture/build_unified_quest.py --repair-linux-packages \
 | Unity native crash / import worker 문제 | 메모리 부족 및 import worker 설정 | desired/standby import worker 모두 1. standby=0이나 ForceToDesiredWorkerCount 호출은 사용하지 않음 |
 | Can not sign / provide passwords | upstream의 private release keystore 설정 상속 | 별도 .warp package에 Unity local debug key 사용. WarpBuild에서 useCustomKeystore=false |
 | Could not determine SDK root | cmdline-tools/latest가 SDK 바깥으로 향하는 symlink | SDK/cmdline-tools/latest 안에 실제 디렉터리 복사. sdkmanager가 실제 부모 경로에서 SDK root를 탐색함 |
-| SSH 응답이 느려지고 빌드 중단 | 네이티브 컴파일에서 메모리 고갈, kernel OOM killer가 Unity 종료 | BEE_BUILD_THREADS=4, 필요하면 2. free -h와 kernel log 확인. 기존 Bee cache 재사용 |
+| SSH 응답이 느려지고 빌드 중단 | 네이티브 컴파일에서 메모리 고갈, kernel OOM killer가 Unity 종료 | BEE_BUILD_THREADS=2, 필요하면 2. free -h와 kernel log 확인. 기존 Bee cache 재사용 |
+| AprilTag detection not completed | native TagResult struct의 Serializable 속성 누락으로 Unity JSON에서 tags 필드가 빠짐 | [Serializable] 추가. WarpBuild가 Unity JsonUtility로 빈 결과와 실제 결과의 round trip을 검사한 뒤 APK 빌드 |
 | 실제 볼륨 버튼 명령이 녹화 요청으로 처리되지 않음 | Unity Send(byte[])는 binary message, 기존 Python은 text만 비교 | receiver가 정확한 START/STOP binary command도 처리. 실제 WebRTC binary control 테스트 통과 |
 | lab6 git push가 403 | 현재 Git CLI credential은 다른 계정 oxeunn | 그 계정의 전역 설정을 바꾸지 않음. 소유자 minje227-coder의 연결된 GitHub 도구로 main에 게시 |
 
@@ -165,3 +166,7 @@ Ready → Recording + 경과시간 → Saving → Saved, 실제 JPEG/MP4 decode�
 Skeleton은 원본 provider-query sample 사이의 보간이며 센서 하드웨어의 동시 노출을 주장하지 않는다.
 실제 AprilTag 검출/metric pose 확인은 인쇄된 tag와 실제 크기가 필요하다.
 Software 테스트 성공, APK 빌드 성공, 설치 성공, headset 실물 녹화 성공을 구분해서 기록한다.
+
+태그 기본값은 한 변 **0.04 m (40 × 40 mm)**이다. lab6 receiver가 Ready 전에 앱에 전송하고 metric pose 계산에 사용한다. 다른 인쇄 크기는 --tag-size-m으로 지정한다.
+
+추가 메모리 제한: WarpBuild는 IL2CPP conversion에도 --jobs=2를 전달하고, Android module의 Gradle JVM heap을 2048 MB로 설정한다. Bee 동시 작업 제한만으로 IL2CPP conversion의 내부 병렬성이 제한되지는 않는다. 중단된 빌드의 Gradle/VBCSCompiler 프로세스가 남아 있는지도 PID와 빌드 경로로 확인한다. 다른 작업의 프로세스는 종료하지 않는다.

@@ -93,12 +93,12 @@ Its launcher label is `XRT-Client Warp`; the original release remains installed.
 
 ```bash
 bash scripts/01_capture/record_body.sh --session take_0001 --wait-seconds 300 \
-  --rgb-fps 10 --tag-size-m 0.0784
+  --rgb-fps 10 --tag-size-m 0.04
 ```
 
-Use the actual printed tag width for `--tag-size-m`. The shown value is the upstream
-app's existing setting, not a measurement of your tag. Omit the option to keep that
-app setting. `--duration` optionally imposes a server-side stop after first recorded
+Default printed tag side length is **0.04 m (40 mm)**. lab6 sends this setting to
+the app before Ready. Use `--tag-size-m` for a different measured printed tag size;
+explicit `--tag-size-m 0` keeps the app setting. `--duration` optionally imposes a server-side stop after first recorded
 frame; volume up can stop earlier. A server invocation saves one episode without
 overwriting; start another invocation for another take. `--keep-overlays` retains
 the existing headset visualization. `--body-only` explicitly uses the legacy body receiver.

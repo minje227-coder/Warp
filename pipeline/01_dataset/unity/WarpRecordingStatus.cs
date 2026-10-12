@@ -26,7 +26,7 @@ public class WarpRecordingStatus : MonoBehaviour
         var panel = new GameObject("WarpRecordingHUD", typeof(RectTransform), typeof(Canvas));
         hud = panel.GetComponent<Canvas>(); hud.renderMode = RenderMode.WorldSpace;
         if (camera != null) panel.transform.SetParent(camera.transform, false);
-        panel.transform.localPosition = new Vector3(0, -0.22f, 0.75f);
+        panel.transform.localPosition = new Vector3(0.45f, -0.20f, 0.85f);
         panel.transform.localScale = Vector3.one * 0.001f;
         panel.GetComponent<RectTransform>().sizeDelta = new Vector2(360, 36);
         var text = new GameObject("Status", typeof(RectTransform), typeof(TextMeshProUGUI));

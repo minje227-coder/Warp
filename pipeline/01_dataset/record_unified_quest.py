@@ -18,7 +18,7 @@ def parse_args(argv=None):
     p.add_argument('--duration', type=float, default=0); p.add_argument('--wait-seconds', type=float, default=90)
     p.add_argument('--min-frames', type=int, default=30); p.add_argument('--check', action='store_true')
     p.add_argument('--rgb-fps', type=float, default=10)
-    p.add_argument('--tag-size-m', type=float, default=0, help='Actual printed tag width in meters; 0 keeps existing app setting')
+    p.add_argument('--tag-size-m', type=float, default=0.04, help='Printed tag side length in meters (default 40 mm); 0 keeps app setting')
     p.add_argument('--keep-overlays', action='store_true')
     args = p.parse_args(argv)
     if args.session and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}',args.session):
