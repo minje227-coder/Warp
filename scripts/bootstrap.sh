@@ -43,7 +43,8 @@ if ((${#selected[@]} == 0)); then selected=(capture); fi
 
 add_unique() {
   local new="$1" p
-  for p in "${paths[@]}"; do [[ "$p" == "$new" ]] && return 0; done
+  # Bash 3.2 on macOS treats an empty array as unset under nounset.
+  for p in ${paths[@]+"${paths[@]}"}; do [[ "$p" == "$new" ]] && return 0; done
   paths+=("$new")
 }
 
