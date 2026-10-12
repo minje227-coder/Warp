@@ -136,3 +136,9 @@ quantized into an already written slot are coalesced and counted. A gap above
 30 Hz video output alone does not establish 30 unique camera frames per second.
 Camera scheduling uses a camera-time phase instead of waiting from each readback.
 Capture artifacts retain original timestamps; no receiver wall clock restamping.
+
+
+After Saved, the connection and receiver stay open by default. Press volume up
+again to start another take in the next date/number folder. Each take resets its
+video timeline and reassembler without changing or overwriting the previous take.
+Use --max-episodes 1 to retain the old single-take command behavior.

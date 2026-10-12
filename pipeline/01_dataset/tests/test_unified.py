@@ -131,18 +131,20 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
             probe.bind(('127.0.0.1',0)); port = probe.getsockname()[1]
         with tempfile.TemporaryDirectory() as temp:
             args = parse_args(['--session','synthetic_test','--out-root',temp,'--host','127.0.0.1',
-                '--port',str(port),'--min-frames','3','--wait-seconds','15'])
+                '--port',str(port),'--min-frames','3','--wait-seconds','15','--max-episodes','2'])
             server = asyncio.create_task(capture(args))
             client = RTCPeerConnection()
             channel = client.createDataChannel('warp_capture')
             received = []
             configured = asyncio.Event()
             recording = asyncio.Event()
+            saved = asyncio.Event()
             @channel.on('message')
             def on_message(raw):
                 message = json.loads(raw); received.append(message)
                 if message['type'] == 'config': configured.set()
                 if message.get('state') == 'recording': recording.set()
+                if message.get('state') == 'saved': saved.set()
             try:
                 await asyncio.sleep(0.2)
                 await client.setLocalDescription(await client.createOffer())
@@ -164,11 +166,22 @@ class WebRTCTest(unittest.IsolatedAsyncioTestCase):
                     for packet in packets(metadata(i),jpeg): channel.send(packet)
                     await asyncio.sleep(0.1)
                 channel.send(b'WARP_REQUEST_STOP')
+                await asyncio.wait_for(saved.wait(),8)
+                self.assertFalse(server.done(), 'Receiver must stay connected after first Saved')
+                saved.clear(); recording.clear()
+                channel.send(b'WARP_REQUEST_START')
+                await asyncio.wait_for(recording.wait(),5)
+                for i in range(1,4):
+                    for packet in packets(metadata(i),jpeg): channel.send(packet)
+                    await asyncio.sleep(0.1)
+                channel.send(b'WARP_REQUEST_STOP')
                 self.assertEqual(await asyncio.wait_for(server,8),0)
                 states = [message.get('state') for message in received]
                 self.assertIn('saving',states); self.assertIn('saved',states)
                 episodes = list(Path(temp).glob('*/[0-9]*/metadata.json'))
-                self.assertEqual(len(episodes),1)
+                self.assertEqual(len(episodes),2)
+                self.assertEqual({p.parent.name for p in episodes},{'1','2'})
+                self.assertTrue(all(inspect_episode(p.parent,min_frames=3,strict_sew=True)['ok'] for p in episodes))
                 result = inspect_episode(episodes[0].parent,min_frames=3,strict_sew=True)
                 self.assertTrue(result['ok'],result['messages'])
             finally:

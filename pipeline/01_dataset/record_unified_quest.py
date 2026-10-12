@@ -17,13 +17,14 @@ def parse_args(argv=None):
     p.add_argument('--host', default='0.0.0.0'); p.add_argument('--port', type=int, default=8080)
     p.add_argument('--duration', type=float, default=0); p.add_argument('--wait-seconds', type=float, default=90)
     p.add_argument('--min-frames', type=int, default=30); p.add_argument('--check', action='store_true')
+    p.add_argument('--max-episodes', type=int, default=0, help='0 records repeatedly; 1 exits after one take')
     p.add_argument('--rgb-fps', type=float, default=30)
     p.add_argument('--tag-size-m', type=float, default=0.04, help='Printed tag side length in meters (default 40 mm); 0 keeps app setting')
     p.add_argument('--keep-overlays', action='store_true')
     args = p.parse_args(argv)
     if args.session and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}',args.session):
         p.error('Invalid session ID')
-    if not 0 < args.port < 65536 or args.duration < 0 or args.wait_seconds <= 0 or args.min_frames < 1:
+    if not 0 < args.port < 65536 or args.duration < 0 or args.wait_seconds <= 0 or args.min_frames < 1 or args.max_episodes < 0:
         p.error('Invalid port/duration/wait/min-frames')
     if not 1 <= args.rgb_fps <= 30 or not 0 <= args.tag_size_m <= 10:
         p.error('rgb-fps must be 1-30; tag-size-m must be 0-10')
@@ -67,6 +68,7 @@ async def capture(args):
     stopping = False
     stop_at = None
     final_metadata = None
+    completed_episodes = 0
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_level='warning'))
 
     def state(value):
@@ -88,7 +90,7 @@ async def capture(args):
                 write_queue.task_done()
 
     async def finalize():
-        nonlocal final_metadata, error
+        nonlocal final_metadata, error, completed_episodes, stopping, requested_at, first, last
         await write_queue.join()
         await asyncio.to_thread(writer.close)
         if assembler.pending: error = error or 'Incomplete RGB bundle at stop'
@@ -115,9 +117,13 @@ async def capture(args):
             'rgb':{'frames':writer.frames,'video':video}, 'control':'Quest volume-up only',
             'tag_size_note':'Actual printed tag size must match server/app setting for metric pose.'}
         (folder/'metadata.json').write_text(json.dumps(final_metadata,indent=2)+'\n')
+        completed_episodes += int(success)
+        print('[OK]' if success else '[FAIL]', final_metadata, flush=True)
+        stopping = False; requested_at = None; first = last = None
         state('saved' if success else 'error')
-        await asyncio.sleep(0.4) # Deliver final headset status before closing SCTP.
-        server.should_exit = True
+        if not success or (args.max_episodes and completed_episodes >= args.max_episodes):
+            await asyncio.sleep(0.4) # Deliver final headset status before closing SCTP.
+            server.should_exit = True
 
     @app.post('/offer')
     async def offer(request: Request):
@@ -137,7 +143,7 @@ async def capture(args):
             arm()
             @channel.on('message')
             def receive(packet):
-                nonlocal error, first, last, requested_at, stopping, stop_at
+                nonlocal error, first, last, requested_at, stopping, stop_at, writer, folder, assembler, final_metadata, session
                 if error: return
                 try:
                     # Unity RTCDataChannel.Send(byte[]) produces binary SCTP messages.
@@ -145,6 +151,13 @@ async def capture(args):
                         packet = packet.decode('ascii')
                     if packet == 'WARP_REQUEST_START':
                         if requested_at is None and not stopping:
+                            if final_metadata is not None:
+                                folder = reserve_episode(args.out_root)
+                                writer = BundleWriter(folder, fps=args.rgb_fps)
+                                assembler = Reassembler()
+                                final_metadata = None
+                                session = args.session or datetime.now(timezone.utc).strftime('take_%Y%m%dT%H%M%SZ')
+                                print('Episode:', folder, flush=True)
                             requested_at = time.monotonic(); state('recording')
                         return
                     if packet == 'WARP_REQUEST_STOP':
@@ -186,7 +199,8 @@ async def capture(args):
                 if not stopping:
                     stopping = True; stop_at = now; state('saving')
             if stopping and now - stop_at > 0.5:
-                await finalize(); return
+                await finalize()
+                if server.should_exit: return
             if now - report >= 5:
                 print(f'Shared frames={writer.frames}; source frames={writer.source_frames}; repeated={writer.repeated_frames}; detected tags={writer.tag_detections}', flush=True)
                 report = now
