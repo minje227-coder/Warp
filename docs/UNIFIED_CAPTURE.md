@@ -199,3 +199,8 @@ Verification: 20 receiver/protocol/artifact tests pass, including sealed-take
 import, corrupt/truncated input rejection and duplicate upload identity. An
 actual HTTP request test verifies saved artifacts, retries and hash rejection.
 These tests use synthetic frames; on-headset recording still requires a take.
+
+Local readiness correction: Ready is now set after local capture components
+initialize, independently of WebRTC/server configuration. A signaling outage
+does not clear local readiness or stop capture. The PC is required only for
+the upload and its Saved acknowledgement.

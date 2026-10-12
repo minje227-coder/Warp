@@ -185,6 +185,10 @@ public class WarpCaptureBridge : MonoBehaviour
         status = hud.AddComponent<WarpRecordingStatus>(); status.capture = this;
         body.OnPoseUpdated += OnBody;
         tracker.OnFrameDetected += OnTags;
+        // Local capture is ready without signaling; PC is only needed for upload.
+        configured = true; cleanView = true;
+        camera.captureInterval = 1.0 / localFps;
+        status.SetState("Ready");
     }
 
     void OnBody(BodyPoseProvider.PoseData pose) {
@@ -306,12 +310,6 @@ public class WarpCaptureBridge : MonoBehaviour
         if (Armed && Time.realtimeSinceStartupAsDouble - lastWrittenAt > 10) {
             FailCapture("Local capture stalled for 10s; partial take retained");
         }
-        if (!controller.IsConnected && status != null && !terminalState && !Armed && !Draining && !uploading && localPath == null) {
-            bool lost = configured || Armed || waitingForAck;
-            configured = false; Armed = false; waitingForAck = false;
-            pending.Clear();
-            status.SetClean(false); status.SetState(lost ? "Connection lost" : "Preparing…");
-            terminalState = lost;
-        }
+
     }
 }
