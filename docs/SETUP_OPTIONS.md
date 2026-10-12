@@ -16,7 +16,7 @@
 ## 2. Other choices
 
 - Quest: `quest3`, `quest3s`, `questpro`, `quest2`, `other`, `none`. **Body Tracking and Passthrough Camera API support differ across models and firmware.** XRT-Client upstream specifically documents Quest 3; do not assume full functionality elsewhere.
-- Capture streams (multi-select): `body`, `hand`, `rgb_left`, `rgb_right`; `all`, `none`. A future recorder should also store **timestamps and sequence IDs**, regardless of streams selected.
+- Capture streams (multi-select): `body`, `hand`, `rgb_left`, `rgb_right`; `all`, `none`. Default recorder captures body/hand + one physical Quest RGB eye (right by default), with original timestamps and sequence IDs. A selection does not enable both cameras.
 - Sources (multi-select): `capture`, `video`, `retarget`, `gripper`; `all`, `none`. Actual source retrieval is opt-in; run `bootstrap.sh ...` or select **download** in the menu. This is independent of captured streams.
 
 ### Interactive
@@ -45,4 +45,4 @@ bash scripts/bootstrap.sh --dry-run capture video retarget
 
 Settings live in `configs/local.env` and are **ignored by Git**. Human pose, faces, videos, and recordings belong in ignored `local_data/`; none of them belong in tracked source control. This selection does not clone code by default; with `--download` it only retrieves **pinned Git submodules**, subject to public upstream availability and their own licenses.
 
-`capture` refers to Quest Body/Hand streaming and CSV recording examples. RGB camera samples (`video`) are not integrated into the body-streaming app, and sync/calibration, retargeting for the 4-DoF waist, gripper mapping, collision-aware validation, policy training, and RL fine-tuning are **not yet implemented**. Confirm device support and research licenses before deploying.
+`capture` refers to Quest Body/Hand streaming and CSV recording examples. RGB is recorded by the separate Camera2 helper and required by the recorder by default. The `video` upstream remains reference material. Hardware acquisition sync/world calibration, retargeting for the 4-DoF waist, gripper mapping, collision-aware validation, policy training, and RL fine-tuning are **not yet implemented**. Confirm device support and research licenses before deploying.

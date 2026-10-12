@@ -38,3 +38,6 @@ outputs/
 **/obj/
 # Machine-specific setup choices (no hardware assumptions committed)
 /configs/local.env
+/configs/quest_rgb.json
+*.keystore
+*.apk

@@ -109,6 +109,7 @@ class RecorderMockTest(unittest.TestCase):
                 "xrt_devices.recording.writer": writer_module,
             }):
                 args = capture.parse_args(["--out-root", temp, "--session", "mock_take",
+                                           "--body-only",
                                            "--wait-seconds", "1", "--duration", "0.2",
                                            "--min-frames", "4"])
                 with patch("sys.stdout", new_callable=io.StringIO):

@@ -15,4 +15,4 @@ else
   exit 3
 fi
 cd "$ROOT"
-exec "$PY" pipeline/01_dataset/validate_csv.py "$@"
+exec "$PY" pipeline/01_dataset/validate_episode.py "$@"

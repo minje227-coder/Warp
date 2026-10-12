@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start minimal BODY/HAND skeleton recorder only; RGB remains unimplemented.
+# Skeleton + physical Quest passthrough RGB by default; --body-only is explicit.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ -x "$ROOT/.venv/bin/python" ]]; then

@@ -41,14 +41,14 @@ fi
 if [[ -z "$PY" ]]; then
   echo '[missing] project .venv. Run bash scripts/01_capture/install_receiver.sh after bootstrap.'
 elif "$PY" pipeline/01_dataset/record_quest_body.py --check; then
-  echo '[import-ready] XRT_devices Python API; Quest network/hardware NOT checked.'
+  echo '[ready] XRT Python API and fresh physical Quest RGB source; skeleton connection not tested.'
 else
-  echo '[not ready] .venv exists but XR dependencies cannot import. Re-run install_receiver.sh.'
+  echo '[not ready] Check XR dependencies and the configured Warp Quest RGB sender.'
 fi
 
 echo '=== runnable vs not-yet-implemented ==='
-echo '[implemented, not tested with Quest] Human body/hand bone CSV -> metadata -> SEW file validation'
-echo '[not implemented] Synchronized RGB + Skeleton capture'
+echo '[implemented] Skeleton CSV + physical Quest RGB JPEG/MP4, original clock sidecars and episode validation'
+echo '[not implemented] Hardware synchronization of camera exposure and skeleton acquisition'
 echo '[not implemented] Quest/Rack/Box camera calibration and object pose'
 echo '[not implemented] 4-DoF waist + gripper retargeting'
 echo '[not implemented] Collision filter, policy training, RL fine-tuning'

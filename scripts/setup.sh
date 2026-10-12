@@ -91,8 +91,8 @@ normalize_multi() {
 
 os=auto
 quest=quest3
-streams=all
-modules=capture,video
+streams=body,hand,rgb_right
+modules=capture
 interactive=0
 download=0
 dry_run=0
@@ -126,12 +126,12 @@ if ((interactive == 1)) || { ((explicit == 0)) && [[ -t 0 ]]; }; then
   case "${answer:-1}" in 1) quest=quest3;; 2) quest=quest3s;; 3) quest=questpro;; 4) quest=quest2;; 5) quest=other;; 6) quest=none;; *) echo 'Invalid Quest choice' >&2; exit 2;; esac
   echo 'Planned streams (multi-select with comma-separated numbers):'
   echo '1) body  2) hand  3) left RGB  4) right RGB  5) all  6) none'
-  read -r -p 'Streams [5]: ' answer
-  case "${answer:-5}" in 5) streams=all;; 6) streams=none;; *) streams="$(map_menu_numbers "$answer" stream)";; esac
+  read -r -p 'Streams [1,2,4]: ' answer
+  case "${answer:-1,2,4}" in 5) streams=all;; 6) streams=none;; *) streams="$(map_menu_numbers "${answer:-1,2,4}" stream)";; esac
   echo 'Upstream code to select (multi-select with comma-separated numbers):'
   echo '1) capture  2) video  3) retarget  4) gripper  5) all  6) none'
-  read -r -p 'Modules [1,2]: ' answer
-  case "${answer:-1,2}" in 5) modules=all;; 6) modules=none;; *) modules="$(map_menu_numbers "$answer" module)";; esac
+  read -r -p 'Modules [1]: ' answer
+  case "${answer:-1}" in 5) modules=all;; 6) modules=none;; *) modules="$(map_menu_numbers "${answer:-1}" module)";; esac
   if ((dry_run == 0)) && ((download == 0)); then
     read -r -p 'Download selected sources now (requires GitHub access)? [y/N]: ' answer
     case "$answer" in y|Y|yes|YES) download=1;; esac
@@ -161,7 +161,8 @@ if [[ "$quest" == quest2 || "$quest" == questpro || "$quest" == other ]]; then
   echo 'NOTE: Quest body tracking/XRT-Client compatibility must be verified for this model.'
 fi
 if [[ "$streams" == *rgb* ]]; then
-  echo 'NOTE: RGB+body synchronized recording is NOT implemented; video submodule is reference code.'
+  echo 'NOTE: Recorder requires one physical Quest RGB camera by default. Configure Warp Quest RGB; --body-only explicitly disables RGB.'
+  echo 'NOTE: One eye per episode; setup selections do not enable a second RGB camera. Hardware clock synchronization is not implemented.'
 fi
 if [[ "$resolved_os" == windows ]]; then
   echo 'NOTE: Windows scripts require Git Bash; alternatively use WSL with --os linux.'
