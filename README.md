@@ -39,3 +39,100 @@ bash scripts/01_capture/validate_body.sh local_data/raw_human/take_0001 --strict
 
 현재 캡처 파일 검증은 로봇 grasp 성공이나 학습 데이터 적합성의 증명이 아닙니다.
 [Upstreams](docs/UPSTREAMS.md), [설정 선택](docs/SETUP_OPTIONS.md), [상태](docs/STATUS.md)를 참고하세요.
+
+---
+
+## WARP × RoboWheel 데이터 생성: GAP 분석 및 로드맵 (2026-10-13)
+
+**최종 목표:** Meta Quest human demonstration (physical RGB, Skeleton, Hand, AprilTag) → Human Data Processing → **WARP-inspired Whole-Body Retargeting + RoboWheel-inspired Gripper/Contact** → Robot Action Dataset (LeRobot) → Whole-Body Policy → RL Fine-tuning.
+
+**현재 결론:** Quest 수집 및 일부 실물 검증은 진행되었지만, **human→robot retargeting, robot-specific gripper mapping, action dataset export, policy 학습 및 RL은 미구현**입니다. Submodule을 연결한 것과 원본 논문 알고리즘의 전체 구현은 다릅니다.
+
+### 1. 기능별 구현 상태 및 검증 범위
+
+| 구간 | 필요한 기능 | 현 상태 |
+| --- | --- | --- |
+| Capture | Physical Quest RGB + Skeleton | 구현; 기존 companion/초기 통합 앱 실물 검증 |
+| Capture | Hand/Finger 전 관절 | 수집 경로는 존재하지만 개별 joint coverage·정확도 검증 필요 |
+| Capture | RGB/Skeleton/AprilTag 원본 time 정렬 | 통합 구현, software tests 통과; 최신 v2 Quest 실물 재검증 필요 |
+| Capture | 30Hz MP4 | 구현; **출력 30Hz ≠ 실제 unique camera frame 30fps** |
+| Calibration | Camera intrinsic/extrinsic, Quest↔rack↔robot world | metadata 일부 확보; 실제 좌표계 calibration 미완료 |
+| Perception | Object 6D pose, tracking, contact phases | 미구현 |
+| Retargeting | Skeleton → robot arm/waist/base, TCP | 참조 upstream만, robot-specific solver 미구현 |
+| Gripper | Hand/object-relative grasp → TCP, closing-axis, open/close | 미구현 |
+| Verification | Joint/velocity limit, collision, grasp/lift, replay | 미구현 |
+| Dataset | Robot state/action schema, sync, LeRobot export | 미구현 |
+| Learning | BC/ACT/Diffusion/Flow Matching, RL | 미구현 |
+
+**검증 관련 주의사항**
+- 기존 two-app companion에서 실물 수집 성공했다고 최신 통합 **v2 APK**까지 검증된 것은 아닙니다.
+- 초기 통합 앱의 71 shared frames/AprilTag ID 2 검출은 확인됐지만 첫 영상 상하 반전 문제가 있어 수정 후 재검증이 필요합니다.
+- 이전 실물 baseline은 **175 unique input frames / 15.07초 ≈ 11.55 source fps**였습니다. 최신 비동기 AprilTag 및 native body pose time 수정 이후 재측정해야 합니다.
+- 반복 프레임으로 만든 30Hz CFR MP4만 보고 source FPS를 판단하면 안 됩니다. source_frames, source_fps, repeated_frames, coalesced_frames를 함께 확인합니다.
+- 파일 검사 PASS는 hardware exposure synchronization, object pose 정확도, robot grasp 성공을 보장하지 않습니다.
+- 근거: [통합 수집 안내](docs/UNIFIED_CAPTURE.md), [Unity 실물 빌드 기록](UNITY_BUILD_README.md), [기존 Capture 상태](docs/STATUS.md).
+
+### 2. WARP/RoboWheel에서 가져온 것과 실제 GAP
+
+| 원본 | 현재 저장소에서 참조한 것 | 별도 작업 |
+| --- | --- | --- |
+| [WARP](https://warp-retargeting.github.io/) | rby1_teleop, stereo-sew, ik-geo Git submodules | 원본 WARP 전체 end-to-end 구현이 아님. 대상 로봇 Human→Robot IK/SEW retargeting, torso/base allocation, TCP, joint/collision 검증을 직접 통합해야 함. 일부 geometric solver에는 별도 라이선스 필요 가능 |
+| [RoboWheel](https://github.com/zhangyuhong01/Robowheel-Toolkits) | 공개 dataset/replay, HDF5→LeRobot 변환, training/visualization 참고 | 공개 toolkit이 논문의 전체 HOI reconstruction, contact refinement, 범용 hand→gripper retargeting을 제공하는 것은 아님. Object-relative grasp와 gripper command 생성 필요 |
+
+원본 논문 또는 toolkit이 그대로 통합 실행된다고 가정하지 않습니다. Revision 및 라이선스 관련 주의: [Upstreams](docs/UPSTREAMS.md).
+
+### 3. 세부 TODO
+
+**A. Quest 수집·전처리**
+- [ ] 최신 Unity APK 빌드/설치, volume-up 녹화·반복 take·Saved·영상 상하 방향을 실제 Quest에서 검증.
+- [ ] Hand/Finger 및 Shoulder–Elbow–Wrist·Spine bone coverage와 coordinate convention 확인.
+- [ ] 카메라 source FPS, tag latency, repeated frame ratio, tracking dropout 실측.
+- [ ] Camera intrinsic/crop/extrinsic 및 Quest↔rack↔robot base calibration.
+- [ ] Timestamp alignment, invalid frame/episode quality filter.
+
+**B. WARP-inspired Whole-Body Retargeting**
+- [ ] Quest skeleton → retargeter 입력 변환 및 Human/Robot coordinate transform.
+- [ ] 대상 로봇 URDF/MJCF, arm/waist(4-DoF)/mobile base joint limits, TCP/closing-axis 정의.
+- [ ] **팔 IK/SEW부터** 구현한 다음 bilateral arms → waist/base allocation 확장.
+- [ ] Joint position/velocity/acceleration limits 및 self/environment collision 검사.
+- [ ] TCP position/orientation error 리포트와 simulation trajectory replay.
+
+**C. RoboWheel-inspired Gripper/Contact**
+- [ ] Object 6D pose 추정(첫 pilot은 known/fixed box pose 허용).
+- [ ] Human hand–object relative pose 및 approach/contact/grasp/lift/release phase 추출.
+- [ ] Human grasp → robot TCP, gripper approach axis·closing axis 및 binary open/close 매핑.
+- [ ] Contact/penetration/grasp feasibility 체크 및 필요시 refinement.
+
+**D. Robot Dataset / Training**
+- [ ] Robot observation/action (q_t, a_t: base·waist·arms·grippers), RGB, object pose, timestamps schema 확정.
+- [ ] Raw source timestamps + output fixed timestep 모두 보존; repeated frames 별도 표기.
+- [ ] Simulation open-loop replay, collision/contact/grasp/lift success 검증.
+- [ ] LeRobot export, schema validation, train/val split 및 데이터 품질 통계.
+- [ ] Whole-Body policy BC/Flow Matching 등의 baseline 후 RL fine-tuning.
+
+**시점 차이 주의:** Quest egocentric RGB를 그대로 robot policy에 투입하면 viewpoint gap이 생길 수 있습니다. 실제 로봇 카메라 시점 또는 simulation-rendered observation 사용 여부를 별도 결정해야 합니다.
+
+### 4. 구현 우선순위 / Definition of Done
+
+| 우선순위 | 작업 | 완료 기준 |
+| --- | --- | --- |
+| **P0: 최소 1 episode** | 최신 Quest capture → 고정 box pose → **팔 중심** retargeting → binary gripper → simulation replay | 유효 robot joint/action trajectory 1개 생성, joint/collision 검사 PASS, box grasp/retrieval replay 성공, 시간 정렬된 dataset 출력 |
+| **P1: Whole-Body** | 양팔, waist/base, dynamic object tracking, bimanual contact, collision-aware refinement | 다양한 상자 위치/초기 자세에서 action 유효성 및 성공률 평가 |
+| **P2: 반복 생성/학습** | Batch conversion, quality filtering, LeRobot, policy, RL | 재현 가능한 training/evaluation scripts와 held-out evaluation metrics |
+
+**P0의 핵심:** 처음부터 WARP/RoboWheel 전체를 재현하지 말고 **base 고정 → 한 팔 TCP + 알려진 box pose + 단순 gripper open/close → 로봇 관절 trajectory → 시뮬레이션 상자 꺼내기** 순서로 검증합니다. 이후 양팔/waist/base 및 복잡한 contact로 확장합니다.
+
+추천 품질 지표: TCP pose error, joint/velocity violation, collisions/penetrations, grasp/lift success, unique source FPS 및 repeated-frame ratio.
+
+### 5. 권장 구조 (아직 생성되지 않은 계획)
+
+- pipeline/01_dataset/capture/ — 현재 수집 코드 분리 후보
+- pipeline/01_dataset/preprocess/ — timestamps, calibration, quality filter
+- pipeline/01_dataset/object_tracking/ — 6D object pose, contact
+- pipeline/01_dataset/retarget/whole_body/ — WARP-inspired SEW/IK, base/waist/arms
+- pipeline/01_dataset/retarget/gripper/ — RoboWheel-inspired grasp mapping
+- pipeline/01_dataset/validation/ — collision, replay, QA
+- pipeline/01_dataset/export/ — LeRobot conversion
+- scripts/01_capture/, 02_convert/, 03_train/, 04_rl/ — 실행 entrypoints
+
+**주의:** 현 시점에 scripts/02_convert/, scripts/03_train/, scripts/04_rl/은 안내용 README placeholder이며, 실행 가능한 변환·학습 코드가 아닙니다. 기존 capture 경로를 재구성할 때도 현재 shell entrypoint 호환성을 유지해야 합니다.
