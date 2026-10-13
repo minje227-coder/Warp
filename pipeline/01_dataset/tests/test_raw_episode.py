@@ -34,10 +34,20 @@ class RawEpisodeTests(unittest.TestCase):
     def ingest(self):return import_raw_episode(self.archive,self.out,self.episode_id,digest(self.archive))
     def test_original_video_preserved_without_resampling(self):
         r=self.ingest();p=Path(r['episode']);self.assertEqual(digest(p/'camera.mp4'),digest(self.src/'camera.mp4'));self.assertFalse(r['dataset_ready']);self.assertEqual(r['processing_state'],'pending')
+        self.assertEqual(p.parent.parent,self.out)
+        self.assertEqual(p.name,self.episode_id)
+        self.assertFalse((self.out/'raw').exists())
     def test_retry_returns_same_episode(self):
-        first=self.ingest();self.assertEqual(first,self.ingest());self.assertEqual(len(list((self.out/'raw').glob('*/*/manifest.json'))),1)
+        first=self.ingest();self.assertEqual(first,self.ingest());self.assertEqual(len(list(self.out.glob('*/*/manifest.json'))),1)
     def test_receipt_commit_crash_recovery(self):
         first=self.ingest();(self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink();self.assertEqual(first,self.ingest())
+    def test_legacy_receipt_crash_recovery(self):
+        first=self.ingest();folder=Path(first['episode']);legacy=self.out/'raw'/folder.parent.name/folder.name
+        legacy.parent.mkdir(parents=True);folder.rename(legacy)
+        first['episode']=str(legacy);(legacy/'transfer.json').write_text(json.dumps(first))
+        (self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink()
+        self.assertEqual(first,self.ingest())
+        self.assertFalse(folder.exists())
     def test_same_id_different_bytes_rejected(self):
         self.ingest();self.manifest['note']='different';self.pack()
         with self.assertRaisesRegex(ValueError,'different bytes'):self.ingest()

@@ -91,14 +91,31 @@ Add `--tag-size-m` to its ExecStart or use the manual processor below for calibr
 Persistent `.raw_processing/ID.json` jobs report running/complete/error; interrupted jobs recover.
 
 Use only one listener on a port. Incoming raw episodes live under
-`~/Warp_data/raw/YYYY-MM-DD/UUID/`; local timestamps need not be 30-Hz uniform.
+`~/Warp_data/YYYY-MM-DD/UUID/`; local timestamps need not be 30-Hz uniform.
+The original video, logs, manifest and transfer receipt stay at the episode root.
+The worker stages results in `processed.partial/` and atomically publishes
+`processed/` only when processing succeeds:
+
+```text
+Warp_data/YYYY-MM-DD/UUID/
+  camera.mp4
+  camera_frames.jsonl, encoded_frames.jsonl, tracking.jsonl, events.jsonl
+  calibration.json, manifest.json, transfer.json
+  processed/
+    quality.json, processing_manifest.json
+    apriltag.jsonl, decoded_frames.jsonl, aligned_body.jsonl
+```
+
+Existing `raw/YYYY-MM-DD/UUID/` archives and `derived/YYYY-MM-DD/UUID/`
+results remain supported in place, including upload retries and pending jobs.
 
 ```bash
 .venv/bin/python pipeline/01_dataset/process_raw_episode.py \
-  RAW_EPISODE DERIVED_EPISODE --tag-size-m ACTUAL_PRINTED_TAG_SIZE_METRES
+  EPISODE EPISODE/processed --tag-size-m ACTUAL_PRINTED_TAG_SIZE_METRES
 ```
 
-Derived output must be outside the original episode. Default processing checks
+Nested output is restricted to the separate `processed/` directory (or its worker
+staging directory); original files cannot be used as output. Default processing checks
 source hashes, full video decode, PTS sequence/frame counts, tag36h11 detections,
 hand/body coverage and sensor gaps. It permits a constant MP4 PTS normalization
 shift only after full-sequence verification (1 ms max container residual).

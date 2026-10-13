@@ -58,7 +58,8 @@ def import_raw_episode(source, out_root, upload_id, checksum):
                 raise ValueError('Confirmed PC episode missing; do not acknowledge')
             return r
         # Recover a crash after durable episode commit but before receipt commit.
-        matches = list((out_root / 'raw').glob('*/' + upload_id + '/transfer.json'))
+        matches = list(out_root.glob('*/' + upload_id + '/transfer.json'))
+        matches += list((out_root / 'raw').glob('*/' + upload_id + '/transfer.json'))
         if matches:
             if len(matches) != 1:
                 raise ValueError('Duplicate raw episode identity')
@@ -87,7 +88,7 @@ def import_raw_episode(source, out_root, upload_id, checksum):
                 raise ValueError('Unexpected camera resolution')
             if any(manifest.get(k, 0) <= 0 for k in ('sensor_frames','encoded_frames','tracking_samples')):
                 raise ValueError('Missing camera/tracking observations')
-            folder = out_root / 'raw' / datetime.now().strftime('%Y-%m-%d') / upload_id
+            folder = out_root / datetime.now().strftime('%Y-%m-%d') / upload_id
             folder.parent.mkdir(parents=True, exist_ok=True)
             staging = folder.with_name(upload_id + '.partial')
             if staging.exists():

@@ -15,7 +15,9 @@ from raw_episode import atomic_json
 def _run_once(root, processor=process, tag_size_m=None, offset_ns=None, retry_errors=False):
     root=Path(root).resolve();jobs=root/'.raw_processing';jobs.mkdir(parents=True,exist_ok=True)
     completed=0
-    for receipt in sorted((root/'raw').glob('*/*/transfer.json')):
+    receipts = list(root.glob('*/*/transfer.json'))
+    receipts += list((root/'raw').glob('*/*/transfer.json'))
+    for receipt in sorted(receipts):
         source=receipt.parent;manifest=source/'manifest.json'
         if not manifest.is_file(): continue
         try:
@@ -23,7 +25,11 @@ def _run_once(root, processor=process, tag_size_m=None, offset_ns=None, retry_er
         except (ValueError,OSError): continue
         ident=metadata.get('episode_id')
         if metadata.get('schema_version')!=3 or transfer.get('state')!='saved' or not isinstance(ident,str) or len(ident)!=32 or any(c not in '0123456789abcdef' for c in ident): continue
-        output=root/'derived'/source.parent.name/ident;partial=output.with_name(ident+'.partial');job_path=jobs/(ident+'.json')
+        # Keep legacy archives/jobs readable; new episodes hold their own results.
+        legacy = source.parent.parent == root/'raw'
+        output = root/'derived'/source.parent.name/ident if legacy else source/'processed'
+        partial = output.with_name(ident+'.partial' if legacy else 'processed.partial')
+        job_path=jobs/(ident+'.json')
         previous=json.loads(job_path.read_text()) if job_path.exists() else {}
         if (output/'quality.json').is_file() and (output/'processing_manifest.json').is_file():
             if json.loads((output/'processing_manifest.json').read_text()).get('state')=='complete':

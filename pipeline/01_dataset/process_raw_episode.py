@@ -149,7 +149,9 @@ def process(source, destination, offset_ns=None, max_bracket_ms=50, tag_size_m=N
     import av
     if not 0 < max_bracket_ms <= 50: raise ValueError('Bracket limit must be in (0,50] ms')
     source,destination=Path(source).resolve(),Path(destination).resolve()
-    if destination==source or source in destination.parents: raise ValueError('Derived output must be outside raw episode')
+    nested_output = destination.parent==source and destination.name in ('processed','processed.partial')
+    if destination==source or destination in source.parents or (source in destination.parents and not nested_output):
+        raise ValueError('Output must be a separate directory or the episode processed/ directory')
     manifest=json.loads((source/'manifest.json').read_text())
     if manifest.get('schema_version')!=3: raise ValueError('Expected raw schema v3')
     checks={}

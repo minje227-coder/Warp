@@ -66,7 +66,7 @@ class ProcessingTest(unittest.TestCase):
         import av
         import numpy as np
         with tempfile.TemporaryDirectory() as d:
-            raw=Path(d)/'raw';raw.mkdir();out=Path(d)/'derived'
+            raw=Path(d)/'raw';raw.mkdir();out=raw/'processed'
             with av.open(str(raw/'camera.mp4'),'w') as v:
                 st=v.add_stream('libx264',rate=30);st.width=64;st.height=64;st.pix_fmt='yuv420p'
                 for i in range(3):
@@ -84,7 +84,10 @@ class ProcessingTest(unittest.TestCase):
             qc=m.process(raw,out,detect_tags=False)
             self.assertEqual(qc['state'],'needs_clock_validation');self.assertEqual(qc['decoded_frames'],3)
             self.assertEqual(qc['unmatched_decoded_frames'],0)
-            self.assertEqual(before,{p.name:m.sha256(p) for p in raw.iterdir()})
+            self.assertEqual(before,{p.name:m.sha256(p) for p in raw.iterdir() if p.is_file()})
+            self.assertTrue((out/'quality.json').is_file())
+            with self.assertRaises(ValueError):m.process(raw,raw,detect_tags=False)
             with self.assertRaises(ValueError):m.process(raw,raw/'derived',detect_tags=False)
+            with self.assertRaises(ValueError):m.process(raw,raw/'camera.mp4',detect_tags=False)
 
 if __name__=='__main__':unittest.main()
