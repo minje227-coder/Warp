@@ -19,6 +19,11 @@ class ProcessingTest(unittest.TestCase):
         self.assertTrue(result['verified'])
         self.assertEqual(result['container_to_encoder_shift_us'],9000000)
         self.assertEqual(result['maximum_residual_us'],0)
+    def test_container_pts_quantization(self):
+        result=m.verify_container_pts([0,33333,66667],[{'pts_us':9000000+t} for t in [0,33390,66758]])
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['maximum_residual_us'],91)
+        self.assertEqual(result['tolerance_us'],1000)
     def test_container_pts_mismatch_no_reorder(self):
         encoded=[{'pts_us':t} for t in [0,33333,66667]]
         self.assertFalse(m.verify_container_pts([0,33333],encoded)['verified'])
@@ -47,6 +52,14 @@ class ProcessingTest(unittest.TestCase):
         event=[{'unix_ticks':m.UNIX_TICKS+200000,'event':'tracking_origin_recentered'}]
         self.assertEqual(m.align_body(match,[body(10000000),body(30000000)],event,0)[0]['reason'],'tracking_discontinuity')
         self.assertEqual(m.align_body(match,[body(0),body(60000000)],[],0)[0]['reason'],'tracking_gap')
+    def test_sdk_valid_zero_hand_geometry_excluded(self):
+        hand={'kind':'XRHandLeft','valid':True,'bones':[dict(body(0)['bones'][0],id=i,name=str(i)) for i in range(5)]}
+        result=m.coverage([hand,body(0)])
+        self.assertEqual(result['XRHandLeft']['source_valid_samples'],1)
+        self.assertEqual(result['XRHandLeft']['all_zero_geometry_samples'],1)
+        self.assertEqual(result['XRHandLeft']['valid_samples'],0)
+        self.assertEqual(result['body']['valid_samples'],1)
+        self.assertTrue(hand['valid'])
     def test_missing_hand_coverage(self):
         self.assertEqual(m.coverage([body(0)])['missing_types'],['left_hand','right_hand'])
     def test_raw_preserved_and_qc_real_video(self):

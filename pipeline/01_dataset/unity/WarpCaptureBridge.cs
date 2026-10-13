@@ -10,6 +10,7 @@ public class WarpCaptureBridge : MonoBehaviour {
     public bool Draining { get; private set; }
     public bool Starting { get; private set; }
     public string UploadText { get; private set; } = "Upload pending · 0/30";
+    public string TrackingText { get; private set; } = "";
     public string UploadDetail { get; private set; } = "";
     AndroidJavaObject recorder;
     WarpRecordingStatus status;
@@ -18,6 +19,7 @@ public class WarpCaptureBridge : MonoBehaviour {
     OVRCameraRig rig;
     OVRSkeleton[] hands;
     long lastBodyTimestamp;
+    double lastBodySourceTime;
     double lastBodySeen, nextPoll;
     bool hadBody;
     [Serializable] class NativeStatus { public string state,error,upload_state;public int pending,capacity;public double progress;public long free_bytes; }
@@ -26,7 +28,7 @@ public class WarpCaptureBridge : MonoBehaviour {
         public string kind,coordinate_frame,time_source;
         public long timestamp_ticks,query_start_ticks,query_end_ticks;
         public double ovr_clock_seconds,body_state_time_seconds,unity_realtime_seconds;
-        public bool valid,high_confidence;
+        public bool valid,provider_valid,high_confidence;
         public Bone[] bones;
         public Pose head_pose,tracking_origin_pose,provider_transform;
     }
@@ -67,7 +69,7 @@ public class WarpCaptureBridge : MonoBehaviour {
         double deadline=Time.realtimeSinceStartupAsDouble+2;
         while(camera.cameraAccess!=null&&camera.cameraAccess.IsPlaying&&Time.realtimeSinceStartupAsDouble<deadline)yield return null;
         yield return new WaitForSecondsRealtime(0.2f);
-        lastBodyTimestamp=0;hadBody=false;
+        lastBodyTimestamp=0;lastBodySourceTime=0;hadBody=false;
         bool ok=false;
         try { if(recorder!=null){recorder.Call("setServerUrl",controller.serverUrl);ok=recorder.Call<bool>("start");} }
         catch(Exception e){Debug.LogError("[Warp] Native start: "+e.Message);}
@@ -75,7 +77,9 @@ public class WarpCaptureBridge : MonoBehaviour {
     }
     Pose PoseOf(Transform t) {return t==null?new Pose(Vector3.zero,Quaternion.identity):new Pose(t.position,t.rotation);}
     void OnBody(BodyPoseProvider.PoseData p) {
-        if(!Armed||p.bones==null||p.timestampTicks==lastBodyTimestamp)return;
+        if(!Armed||p.bones==null||p.bodyStateTimeSeconds<=0||p.bodyStateTimeSeconds==lastBodySourceTime)return;
+        if(lastBodySourceTime>0&&p.bodyStateTimeSeconds<lastBodySourceTime)recorder.Call("event","body_source_time_regressed");
+        lastBodySourceTime=p.bodyStateTimeSeconds;
         if(lastBodyTimestamp>0&&p.timestampTicks<lastBodyTimestamp)recorder.Call("event","body_clock_regressed");
         lastBodyTimestamp=p.timestampTicks;lastBodySeen=Time.realtimeSinceStartupAsDouble;hadBody=true;
         var bones=new Bone[p.bones.Count];
@@ -94,7 +98,7 @@ public class WarpCaptureBridge : MonoBehaviour {
             UploadText=$"Upload pending · {s.pending}/30";
             UploadDetail=s.upload_state=="Sending"?$"Sending · {s.progress*100:F0}%":s.upload_state=="Idle"?"":s.upload_state;
             if(s.state=="Recording"&&!Armed){Starting=false;Draining=false;Armed=true;status.SetClean(true);status.SetState("Recording");}
-            else if(s.state=="Ready"&&(Armed||Draining||Starting)){Armed=Draining=Starting=false;status.SetClean(false);status.SetState("Ready");camera.ResumePreview();}
+            else if(s.state=="Ready"&&(Armed||Draining||Starting)){Armed=Draining=Starting=false;TrackingText="";status.SetClean(false);status.SetState("Ready");camera.ResumePreview();}
             else if(s.state=="Recording error"){Armed=Draining=Starting=false;status.SetClean(false);status.SetState(s.error);camera.ResumePreview();}
         }
         if(!Armed)return;
@@ -103,13 +107,22 @@ public class WarpCaptureBridge : MonoBehaviour {
             valid=hadBody&&Time.realtimeSinceStartupAsDouble-lastBodySeen<0.1,
             head_pose=PoseOf(controller.vrCamera!=null?controller.vrCamera.transform:null),tracking_origin_pose=PoseOf(rig!=null?rig.trackingSpace:null)};
         Write(head);
+        int validHands=0;
         foreach(var hand in hands){
-            bool valid=hand.isActiveAndEnabled&&hand.IsDataValid;
+            bool providerValid=hand.isActiveAndEnabled&&hand.IsDataValid;
             var bones=new List<Bone>();
-            if(valid&&hand.Bones!=null)foreach(var b in hand.Bones)if(b.Transform!=null)bones.Add(new Bone{id=(int)b.Id,name=b.Id.ToString(),position=b.Transform.position,rotation=b.Transform.rotation});
+            bool nonzero=false;
+            if(hand.Bones!=null)foreach(var b in hand.Bones)if(b.Transform!=null){
+                Vector3 position=b.Transform.position; nonzero |= position.sqrMagnitude>1e-12f;
+                bones.Add(new Bone{id=(int)b.Id,name=hand.GetSkeletonType()+"_"+(int)b.Id,position=position,rotation=b.Transform.rotation});
+            }
+            // SDK validity can remain true with uninitialized all-zero hands.
+            bool valid=providerValid&&bones.Count>3&&nonzero;
+            if(valid)validHands++;
             Write(new Sample{kind=hand.GetSkeletonType().ToString(),coordinate_frame="unity_world_meters_xyzw",time_source="query_utc_not_sensor_exposure",
-                timestamp_ticks=DateTime.UtcNow.Ticks,ovr_clock_seconds=OVRPlugin.GetTimeInSeconds(),valid=valid,high_confidence=hand.IsDataHighConfidence,bones=bones.ToArray()});
+                timestamp_ticks=DateTime.UtcNow.Ticks,ovr_clock_seconds=OVRPlugin.GetTimeInSeconds(),valid=valid,provider_valid=providerValid,high_confidence=hand.IsDataHighConfidence,bones=bones.ToArray()});
         }
+        TrackingText=!head.valid?"Body tracking unavailable":validHands<2?"Hand tracking unavailable":"";
     }
     void Write(Sample s){recorder.Call("appendTracking",JsonUtility.ToJson(s));}
     void StopWithEvent(string value){if(recorder==null||(!Armed&&!Starting))return;recorder.Call("event",value);recorder.Call("stop");Armed=Starting=false;Draining=true;}

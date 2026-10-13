@@ -80,7 +80,7 @@ public class WarpRecordingStatus : MonoBehaviour
             label.text = state == "Recording" ? $"Recording · {seconds / 60:00}:{seconds % 60:00}" : state;
             label.color = state == "Recording" ? new Color(1f, 0.25f, 0.25f) : Color.white;
         }
-        if (uploadLabel != null) uploadLabel.text = capture.UploadText + (string.IsNullOrEmpty(capture.UploadDetail) ? "" : "\n" + capture.UploadDetail);
+        if (uploadLabel != null) uploadLabel.text = capture.UploadText + (string.IsNullOrEmpty(capture.UploadDetail) ? "" : "\n" + capture.UploadDetail) + (string.IsNullOrEmpty(capture.TrackingText) ? "" : "\n" + capture.TrackingText);
         if (!clean) return;
         if (Time.realtimeSinceStartupAsDouble < nextCleanCheck) return;
         nextCleanCheck = Time.realtimeSinceStartupAsDouble + 1;

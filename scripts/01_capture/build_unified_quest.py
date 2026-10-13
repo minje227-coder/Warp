@@ -86,6 +86,14 @@ def prepare(destination, server_ip=None):
     scene.write_text(text.replace('RequestedResolution: {x: 1280, y: 960}', 'RequestedResolution: {x: 1280, y: 1280}'))
     manifest = destination / 'Assets/Plugins/Android/AndroidManifest.xml'
     manifest.write_text(manifest.read_text().replace('com.unity3d.player.UnityPlayerGameActivity', 'dev.warp.capture.WarpVolumeActivity'))
+    text = manifest.read_text()
+    if 'android:usesCleartextTraffic=' not in text:
+        text = text.replace('<application ', '<application android:usesCleartextTraffic="true" ', 1)
+    if 'android:networkSecurityConfig=' in text:
+        text = re.sub(r'android:networkSecurityConfig="[^"]*"', 'android:networkSecurityConfig="@xml/warp_lan_security"', text)
+    else:
+        text = text.replace('<application ', '<application android:networkSecurityConfig="@xml/warp_lan_security" ', 1)
+    manifest.write_text(text)
     if server_ip:
         ipaddress.IPv4Address(server_ip)
         controller = destination / 'Assets/Scripts/WebRTCController.cs'

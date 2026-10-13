@@ -93,7 +93,7 @@ public final class WarpRawRecorder {
         }catch(Exception ex){error=ex.getMessage();state="Recording error";return false;}
     }
     private void ensureCapacity() throws Exception {
-        List<File> all=episodes(); all.sort(Comparator.comparingLong(File::lastModified));
+        List<File> all=episodes(); all.sort(Comparator.comparingLong(this::episodeCreated));
         while(all.size()>=CAPACITY || root.getUsableSpace()<MIN_FREE) {
             File victim=null;for(File d:all)if(new File(d,"receipt.json").exists()&&!d.getName().equals(uploadingId)){victim=d;break;}
             if(victim==null)throw new IOException(all.size()>=CAPACITY?"Queue full: 30 unconfirmed episodes retained":"Storage low: unconfirmed recordings protected");
@@ -176,6 +176,12 @@ public final class WarpRawRecorder {
                                             }catch(Exception ex){fail(e,ex);}
                                         }
                                         public void onCaptureFailed(CameraCaptureSession s,CaptureRequest r,CaptureFailure f){event("camera_capture_failed:"+f.getFrameNumber());}
+                                        public void onCaptureSequenceCompleted(CameraCaptureSession s,int id,long lastFrame){
+                                            if(e.stopping){s.close();if(e.camera!=null)e.camera.close();}
+                                        }
+                                        public void onCaptureSequenceAborted(CameraCaptureSession s,int id){
+                                            if(e.stopping){e.failure="Capture sequence aborted before metadata drain";s.close();if(e.camera!=null)e.camera.close();}
+                                        }
                                     },cameraHandler);state="Recording";
                                 }catch(Exception ex){fail(e,ex);}
                             }
@@ -185,7 +191,7 @@ public final class WarpRawRecorder {
                 }
                 public void onDisconnected(CameraDevice camera){fail(e,new IOException("Camera disconnected"));camera.close();}
                 public void onError(CameraDevice camera,int code){fail(e,new IOException("Camera error "+code));camera.close();}
-                public void onClosed(CameraDevice camera){e.cameraClosed=true;maybeSeal(e);}
+                public void onClosed(CameraDevice camera){e.cameraClosed=true;if(e.stopping)finishEncoder(e);maybeSeal(e);}
             },cameraHandler);
         }catch(Exception ex){fail(e,ex);}
     }
@@ -203,11 +209,18 @@ public final class WarpRawRecorder {
         event("stop");e.stopping=true;state="Saving";
         trackingHandler.post(()->{try{e.tracking.close();e.events.close();}catch(Exception ex){e.failure=ex.toString();}e.trackingClosed=true;maybeSeal(e);});
         cameraHandler.post(()->{
-            try{if(e.session!=null){e.session.stopRepeating();e.session.abortCaptures();e.session.close();}if(e.camera!=null)e.camera.close();else e.cameraClosed=true;}
-            catch(Exception ex){e.failure=ex.toString();e.cameraClosed=true;}
-            codecHandler.post(()->{try{if(e.codec!=null)e.codec.signalEndOfInputStream();else closeCodec(e);}catch(Exception ex){e.failure=ex.toString();closeCodec(e);}});
-            cameraHandler.postDelayed(()->{if(!e.finalized){e.failure="Stop timed out; partial take retained";closeCodec(e);e.cameraClosed=true;maybeSeal(e);}},10000);
+            try{
+                if(e.session!=null)e.session.stopRepeating();
+                else if(e.camera!=null)e.camera.close();
+                else {e.cameraClosed=true;finishEncoder(e);}
+            } catch(Exception ex){e.failure=ex.toString();if(e.camera!=null)e.camera.close();else{e.cameraClosed=true;finishEncoder(e);}}
+            // Keep in-flight capture results until sequence completion. Closing or
+            // aborting immediately can lose metadata for the last encoded frame.
+            cameraHandler.postDelayed(()->{if(!e.finalized){e.failure="Stop timed out; partial take retained";if(e.camera!=null)e.camera.close();e.cameraClosed=true;codecHandler.post(()->closeCodec(e));}},10000);
         });
+    }
+    private void finishEncoder(Episode e){
+        codecHandler.post(()->{try{if(e.codec!=null&&!e.codecClosed)e.codec.signalEndOfInputStream();else closeCodec(e);}catch(Exception ex){e.failure=ex.toString();closeCodec(e);}});
     }
     private void fail(Episode e,Exception ex){if(e.failure.isEmpty())e.failure=ex.toString();if(active==e){error=e.failure;stop();}}
     private synchronized void closeCodec(Episode e) {
@@ -239,10 +252,14 @@ public final class WarpRawRecorder {
             writeAtomic(new File(e.dir,"manifest.json"),manifest.toString());
         }catch(Exception ex){try{writeAtomic(new File(e.dir,"interrupted.json"),new JSONObject().put("reason",ex.toString()).toString());}catch(Exception ignored){}}});
     }
+    private long episodeCreated(File directory){
+        try(InputStream in=new FileInputStream(new File(directory,"manifest.json"))){return new JSONObject(read(in)).getLong("created_unix_ms");}
+        catch(Exception e){return Long.MAX_VALUE;}
+    }
     private List<File> episodes(){File[] all=root.listFiles(File::isDirectory);return all==null?new ArrayList<>():new ArrayList<>(Arrays.asList(all));}
     private int pending(){int n=0;for(File d:episodes())if(!new File(d,"receipt.json").exists()&&(active==null||!d.equals(active.dir)))n++;return n;}
     private void uploadLoop(){int delay=2;while(alive){try{
-        List<File> q=episodes();q.sort(Comparator.comparingLong(File::lastModified));File next=null;
+        List<File> q=episodes();q.sort(Comparator.comparingLong(this::episodeCreated));File next=null;
         for(File d:q)if(new File(d,"manifest.json").exists()&&!new File(d,"receipt.json").exists()){next=d;break;}
         if(next==null){uploadState="Idle";progress=0;Thread.sleep(1000);continue;}
         uploadingId=next.getName();uploadState="Preparing upload";File zip=new File(next,"upload.zip");
@@ -265,7 +282,7 @@ public final class WarpRawRecorder {
             if(!r.getString("upload_id").equals(next.getName())||!r.getString("sha256").equals(digest)||!r.getString("state").equals("saved"))throw new IOException("Receipt mismatch");
             writeAtomic(new File(next,"receipt.json"),reply);zip.delete();uploadingId="";delay=2;
         }finally{c.disconnect();}
-    }catch(Exception ex){uploadState="Retrying";uploadingId="";progress=0;try{Thread.sleep(delay*1000L);}catch(InterruptedException ignored){}delay=Math.min(60,delay*2);}}}
+    }catch(Exception ex){android.util.Log.w("WarpRaw","Upload retry: "+ex.getMessage());uploadState="Retrying";uploadingId="";progress=0;try{Thread.sleep(delay*1000L);}catch(InterruptedException ignored){}delay=Math.min(60,delay*2);}}}
     private void yieldToCapture() throws InterruptedException{if(active!=null)Thread.sleep(10);}
     private String sha(File f)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");try(InputStream in=new FileInputStream(f)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){md.update(b,0,n);yieldToCapture();}}StringBuilder s=new StringBuilder();for(byte b:md.digest())s.append(String.format("%02x",b&255));return s.toString();}
     private static BufferedWriter writer(File d,String n)throws IOException{return new BufferedWriter(new OutputStreamWriter(new FileOutputStream(new File(d,n)),"UTF-8"),65536);}

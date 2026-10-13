@@ -1,0 +1,14 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.warp.captureprobe">
+  <uses-sdk android:minSdkVersion="32" android:targetSdkVersion="34" />
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-permission android:name="horizonos.permission.HEADSET_CAMERA" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+  <application android:label="Warp Camera Probe" android:debuggable="true" android:theme="@android:style/Theme.Material.NoActionBar">
+    <service android:name=".ProbeService" android:exported="true" android:foregroundServiceType="camera" />
+    <activity android:name=".ProbeActivity" android:exported="true">
+      <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+    </activity>
+  </application>
+</manifest>

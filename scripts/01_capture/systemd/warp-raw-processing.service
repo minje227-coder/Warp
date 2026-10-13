@@ -1,0 +1,13 @@
+[Unit]
+Description=Warp raw episode offline AprilTag and quality worker
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Warp
+ExecStart=%h/Warp/.venv/bin/python -u pipeline/01_dataset/raw_processing_worker.py %h/Warp_data
+Restart=on-failure
+RestartSec=3
+Nice=10
+
+[Install]
+WantedBy=default.target

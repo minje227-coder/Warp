@@ -1,3 +1,5 @@
+> Current raw-v3 capture: see [RAW_CAPTURE.md](RAW_CAPTURE.md). This document retains legacy v1/v2 behavior and historical evidence.
+
 # One XRT app: RGB + Skeleton + AprilTag
 
 Implementation branch: `main`. Receiver/transport/artifact tests pass;

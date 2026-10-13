@@ -54,10 +54,10 @@ def reconcile(encoded, sensor, tolerance_ns=2000):
     return results
 
 
-def verify_container_pts(decoded, encoded, tolerance_us=2):
+def verify_container_pts(decoded, encoded, tolerance_us=1000):
     """Verify one constant muxer shift across every frame, preserving order."""
     original=[int(f['pts_us']) for f in encoded]
-    result={'verified':False,'container_to_encoder_shift_us':None,'maximum_residual_us':None}
+    result={'verified':False,'container_to_encoder_shift_us':None,'maximum_residual_us':None,'tolerance_us':tolerance_us,'tolerance_reason':'MP4 container time-base quantization; sensor exposure reconciliation separately uses 2us'}
     if not decoded or len(decoded)!=len(original):
         return dict(result,reason='frame_count_mismatch')
     if any(t is None for t in decoded): return dict(result,reason='missing_pts')
@@ -132,9 +132,15 @@ def coverage(tracking):
     result={}
     for kind in sorted({s.get('kind','unknown') for s in tracking}):
         samples=[s for s in tracking if s.get('kind','unknown')==kind]
-        valid=[s for s in samples if s.get('valid')]
+        source_valid=[s for s in samples if s.get('valid')]
+        is_hand=kind in ('HandLeft','HandRight','XRHandLeft','XRHandRight')
+        def zero_geometry(sample):
+            bones=sample.get('bones',[])
+            return bool(is_hand and len(bones)>1 and all(all(abs(float(b.get('position',{}).get(axis,0)))<1e-9 for axis in 'xyz') for b in bones))
+        zeros=[s for s in samples if zero_geometry(s)]
+        valid=[s for s in source_valid if not zero_geometry(s)]
         names=Counter(b.get('name','unknown') for s in valid for b in s.get('bones',[]))
-        result[kind]={'samples':len(samples),'valid_samples':len(valid),'valid_fraction':len(valid)/len(samples),'joint_valid_sample_counts':dict(names)}
+        result[kind]={'samples':len(samples),'source_valid_samples':len(source_valid),'all_zero_geometry_samples':len(zeros),'valid_samples':len(valid),'valid_fraction':len(valid)/len(samples),'joint_valid_sample_counts':dict(names)}
     result['missing_types']=[k for k,variants in {'body':['body'],'left_hand':['HandLeft','XRHandLeft'],'right_hand':['HandRight','XRHandRight']}.items() if not any(v in result for v in variants)]
     return result
 
@@ -208,7 +214,7 @@ def process(source, destination, offset_ns=None, max_bracket_ms=50, tag_size_m=N
         'sensor_clock_regressions':sum(g<=0 for g in gaps),'maximum_sensor_gap_ms':max(gaps,default=None),'observed_sensor_fps':None if len(sensor)<2 or sensor[-1]['sensor_timestamp_ns']<=sensor[0]['sensor_timestamp_ns'] else (len(sensor)-1)*1e9/(sensor[-1]['sensor_timestamp_ns']-sensor[0]['sensor_timestamp_ns']),
         'apriltag_detections':detections,'camera_pose_status':'output_intrinsics_verified' if verified else 'needs_camera_calibration','tracking_coverage':coverage(tracking),
         'alignment_valid_frames':sum(r['valid'] for r in aligned),'alignment_reasons':dict(Counter(r['reason'] for r in aligned)),
-        'notes':['No repeated-frame padding or fixed-FPS reconstruction.','Static scenes cannot establish image duplication; PTS and exposure provenance are checked.','Explicit offset must be validated independently, including drift; camera-to-world extrinsics remain unverified.']}
+        'notes':['Container normalization tolerates 1ms residual; longer episodes may need quantization-aware validation, without fabricated corrections.','Hand coverage excludes multi-joint all-zero geometry even if SDK reports valid; raw validity remains preserved.','No repeated-frame padding or fixed-FPS reconstruction.','Static scenes cannot establish image duplication; PTS and exposure provenance are checked.','Explicit offset must be validated independently, including drift; camera-to-world extrinsics remain unverified.']}
     write_json(destination/'quality.json',qc)
     provenance=json.loads((destination/'processing_manifest.json').read_text());provenance['state']='complete';provenance['outputs']={p.name:sha256(p) for p in destination.iterdir() if p.name!='processing_manifest.json'}
     write_json(destination/'processing_manifest.json',provenance)

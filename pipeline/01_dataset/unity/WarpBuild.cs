@@ -2,6 +2,7 @@
 using System;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Android;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
@@ -18,6 +19,7 @@ public static class WarpBuild
             // Unity's local debug key without changing the original installation.
             PlayerSettings.Android.useCustomKeystore = false;
         }
+        PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
         PlayerSettings.bundleVersion = "3.0.0-raw";
         PlayerSettings.Android.bundleVersionCode = 30000;
         var recorderPlugin = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpRawRecorder.java") as PluginImporter;
@@ -50,6 +52,21 @@ public static class WarpBuild
         });
         if (report.summary.result != BuildResult.Succeeded) throw new Exception("Android APK build failed");
         Debug.Log("[Warp] Unified APK: " + Path.GetFullPath(output));
+    }
+}
+// Unity generates a network-security XML which overrides usesCleartextTraffic.
+// The capture receiver is an explicitly configured LAN HTTP endpoint.
+public class WarpLanNetworkSecurity : IPostGenerateGradleAndroidProject {
+    public int callbackOrder => 10000;
+    public void OnPostGenerateGradleAndroidProject(string path) {
+        string config=Path.Combine(path,"src/main/res/xml/warp_lan_security.xml");
+        Directory.CreateDirectory(Path.GetDirectoryName(config));
+        File.WriteAllText(config,"<?xml version=\"1.0\" encoding=\"utf-8\"?><network-security-config><base-config cleartextTrafficPermitted=\"true\" /></network-security-config>");
+        string manifest=Path.Combine(path,"src/main/AndroidManifest.xml");
+        string text=File.ReadAllText(manifest);
+        text=System.Text.RegularExpressions.Regex.Replace(text,"android:networkSecurityConfig=\"[^\"]*\"", "android:networkSecurityConfig=\"@xml/warp_lan_security\"");
+        File.WriteAllText(manifest,text);
+        Debug.Log("[Warp] LAN HTTP network security config applied");
     }
 }
 #endif

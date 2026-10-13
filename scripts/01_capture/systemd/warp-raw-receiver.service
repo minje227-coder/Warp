@@ -1,0 +1,13 @@
+[Unit]
+Description=Warp Quest raw capture receiver
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Warp
+ExecStart=%h/Warp/.venv/bin/python -u pipeline/01_dataset/record_unified_quest.py --wait-seconds 315360000
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
