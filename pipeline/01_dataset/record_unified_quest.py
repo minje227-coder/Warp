@@ -61,6 +61,12 @@ async def capture(args):
     tag_joiner = TagJoiner()
     write_queue = asyncio.Queue(maxsize=8)
     app = FastAPI()
+    # Raw-v3 uploads preserve source files and acknowledge storage independently
+    # of legacy capture/AprilTag processing. Keep the existing offer endpoint.
+    from raw_receiver import create_app
+    for route in create_app(args.out_root).routes:
+        if getattr(route, 'path', '') in ('/health', '/upload_raw'):
+            app.router.routes.append(route)
     peers = set()
     channels = []
     error = None

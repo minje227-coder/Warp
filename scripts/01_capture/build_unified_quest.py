@@ -78,6 +78,12 @@ def prepare(destination, server_ip=None):
     java = destination / 'Assets/WarpAndroid'
     java.mkdir()
     shutil.copy2(source / 'WarpVolumeActivity.java', java / 'WarpVolumeActivity.java')
+    shutil.copy2(source / 'WarpRawRecorder.java', java / 'WarpRawRecorder.java')
+    scene = destination / 'Assets/Scenes/MainScene.unity'
+    text = scene.read_text()
+    if text.count('RequestedResolution: {x: 1280, y: 960}') != 1:
+        raise RuntimeError('Expected one reviewed PCA resolution setting')
+    scene.write_text(text.replace('RequestedResolution: {x: 1280, y: 960}', 'RequestedResolution: {x: 1280, y: 1280}'))
     manifest = destination / 'Assets/Plugins/Android/AndroidManifest.xml'
     manifest.write_text(manifest.read_text().replace('com.unity3d.player.UnityPlayerGameActivity', 'dev.warp.capture.WarpVolumeActivity'))
     if server_ip:

@@ -7,7 +7,7 @@ using UnityEngine;
 public class WarpRecordingStatus : MonoBehaviour
 {
     public WarpCaptureBridge capture;
-    TMP_Text label;
+    TMP_Text label, uploadLabel;
     Canvas hud;
     string state = "Preparing…";
     double recordingStart;
@@ -37,6 +37,12 @@ public class WarpRecordingStatus : MonoBehaviour
         var rect = text.GetComponent<RectTransform>();
         rect.anchorMin = Vector2.zero; rect.anchorMax = Vector2.one;
         rect.offsetMin = rect.offsetMax = Vector2.zero;
+        var upload = new GameObject("UploadQueue", typeof(RectTransform), typeof(TextMeshProUGUI));
+        upload.transform.SetParent(panel.transform, false);
+        uploadLabel = upload.GetComponent<TextMeshProUGUI>();
+        uploadLabel.fontSize = 17; uploadLabel.alignment = TextAlignmentOptions.Center; uploadLabel.raycastTarget = false;
+        var uploadRect = upload.GetComponent<RectTransform>();
+        uploadRect.sizeDelta = new Vector2(360, 60); uploadRect.anchoredPosition = new Vector2(0, -54);
         body = capture.controller.bodyPoseProvider;
         tracker = FindFirstObjectByType<QuestAprilTagTracker>(FindObjectsInactive.Include);
     }
@@ -74,6 +80,7 @@ public class WarpRecordingStatus : MonoBehaviour
             label.text = state == "Recording" ? $"Recording · {seconds / 60:00}:{seconds % 60:00}" : state;
             label.color = state == "Recording" ? new Color(1f, 0.25f, 0.25f) : Color.white;
         }
+        if (uploadLabel != null) uploadLabel.text = capture.UploadText + (string.IsNullOrEmpty(capture.UploadDetail) ? "" : "\n" + capture.UploadDetail);
         if (!clean) return;
         if (Time.realtimeSinceStartupAsDouble < nextCleanCheck) return;
         nextCleanCheck = Time.realtimeSinceStartupAsDouble + 1;

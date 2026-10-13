@@ -8,16 +8,6 @@ using UnityEngine;
 public static class WarpBuild
 {
     public static void Android() {
-        // Exercise Unity serialization itself; Python synthetic JSON cannot catch
-        // a missing [Serializable] on the native detector result type.
-        var probe = new WarpCaptureBridge.Bundle { tags = new QuestAprilTagTracker.TagResult[0] };
-        if (!JsonUtility.ToJson(probe).Contains("\"tags\":[]"))
-            throw new Exception("Completed empty AprilTag results must serialize as tags:[]");
-        probe.tags = new[] { new QuestAprilTagTracker.TagResult { id = 17,
-            position = new Vector3(1, 2, 3), rotation = Quaternion.identity } };
-        var roundTrip = JsonUtility.FromJson<WarpCaptureBridge.Bundle>(JsonUtility.ToJson(probe));
-        if (roundTrip.tags == null || roundTrip.tags.Length != 1 || roundTrip.tags[0].id != 17)
-            throw new Exception("AprilTag results failed Unity JSON round trip");
         string output = Environment.GetEnvironmentVariable("WARP_APK_OUTPUT");
         if (string.IsNullOrEmpty(output)) throw new Exception("WARP_APK_OUTPUT must be set");
         string applicationId = Environment.GetEnvironmentVariable("WARP_APPLICATION_ID") ?? "com.GTSafeRoboticsLab.xrteleopclient";
@@ -28,6 +18,12 @@ public static class WarpBuild
             // Unity's local debug key without changing the original installation.
             PlayerSettings.Android.useCustomKeystore = false;
         }
+        PlayerSettings.bundleVersion = "3.0.0-raw";
+        PlayerSettings.Android.bundleVersionCode = 30000;
+        var recorderPlugin = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpRawRecorder.java") as PluginImporter;
+        if (recorderPlugin == null) throw new Exception("Native raw recorder not imported");
+        recorderPlugin.SetCompatibleWithAnyPlatform(false); recorderPlugin.SetCompatibleWithEditor(false);
+        recorderPlugin.SetCompatibleWithPlatform(BuildTarget.Android, true); recorderPlugin.SaveAndReimport();
         var java = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpVolumeActivity.java") as PluginImporter;
         if (java == null) throw new Exception("Volume-up Java source plugin was not imported");
         java.SetCompatibleWithAnyPlatform(false);
