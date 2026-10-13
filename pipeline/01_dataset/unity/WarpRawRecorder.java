@@ -38,7 +38,8 @@ public final class WarpRawRecorder {
         MediaCodec codec; MediaMuxer muxer; Surface surface;
         BufferedWriter frames, encoded, tracking, events;
         int track = -1, sensorFrames, encodedFrames; volatile long trackingSamples;
-        boolean muxing, stopping, cameraClosed, codecClosed, trackingClosed, finalizeStarted;
+        boolean muxing, repeatingStarted, finalizeStarted;
+        volatile boolean stopping, cameraClosed, codecClosed, trackingClosed;
         volatile String failure = ""; volatile boolean finalized;
         long created = System.currentTimeMillis(); JSONObject calibration;
         Episode(File d) { dir=d; id=d.getName(); }
@@ -158,7 +159,7 @@ public final class WarpRawRecorder {
                         camera.createCaptureSession(new SessionConfiguration(SessionConfiguration.SESSION_REGULAR,
                             Collections.singletonList(out),r->cameraHandler.post(r),new CameraCaptureSession.StateCallback(){
                             public void onConfigured(CameraCaptureSession session){
-                                e.session=session;if(e.stopping){session.close();return;}
+                                e.session=session;if(e.stopping){session.close();camera.close();return;}
                                 try {
                                     CaptureRequest.Builder b=camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);b.addTarget(e.surface);
                                     b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,new Range<>(30,30));
@@ -177,12 +178,12 @@ public final class WarpRawRecorder {
                                         }
                                         public void onCaptureFailed(CameraCaptureSession s,CaptureRequest r,CaptureFailure f){event("camera_capture_failed:"+f.getFrameNumber());}
                                         public void onCaptureSequenceCompleted(CameraCaptureSession s,int id,long lastFrame){
-                                            if(e.stopping){s.close();if(e.camera!=null)e.camera.close();}
+                                            if(e.stopping){e.repeatingStarted=false;s.close();if(e.camera!=null)e.camera.close();}
                                         }
                                         public void onCaptureSequenceAborted(CameraCaptureSession s,int id){
-                                            if(e.stopping){e.failure="Capture sequence aborted before metadata drain";s.close();if(e.camera!=null)e.camera.close();}
+                                            if(e.stopping){e.repeatingStarted=false;if(e.failure.isEmpty())e.failure="Capture sequence aborted before metadata drain";s.close();if(e.camera!=null)e.camera.close();}
                                         }
-                                    },cameraHandler);state="Recording";
+                                    },cameraHandler);e.repeatingStarted=true;state="Recording";
                                 }catch(Exception ex){fail(e,ex);}
                             }
                             public void onConfigureFailed(CameraCaptureSession session){fail(e,new IOException("Camera encoder configuration failed"));}
@@ -210,10 +211,10 @@ public final class WarpRawRecorder {
         trackingHandler.post(()->{try{e.tracking.close();e.events.close();}catch(Exception ex){e.failure=ex.toString();}e.trackingClosed=true;maybeSeal(e);});
         cameraHandler.post(()->{
             try{
-                if(e.session!=null)e.session.stopRepeating();
+                if(e.session!=null&&e.repeatingStarted){e.repeatingStarted=false;e.session.stopRepeating();}
                 else if(e.camera!=null)e.camera.close();
                 else {e.cameraClosed=true;finishEncoder(e);}
-            } catch(Exception ex){e.failure=ex.toString();if(e.camera!=null)e.camera.close();else{e.cameraClosed=true;finishEncoder(e);}}
+            } catch(Exception ex){if(e.failure.isEmpty())e.failure=ex.toString();if(e.camera!=null)e.camera.close();else{e.cameraClosed=true;finishEncoder(e);}}
             // Keep in-flight capture results until sequence completion. Closing or
             // aborting immediately can lose metadata for the last encoded frame.
             cameraHandler.postDelayed(()->{if(!e.finalized){e.failure="Stop timed out; partial take retained";if(e.camera!=null)e.camera.close();e.cameraClosed=true;codecHandler.post(()->closeCodec(e));}},10000);
@@ -248,7 +249,7 @@ public final class WarpRawRecorder {
                 .put("sensor_frames",e.sensorFrames).put("encoded_frames",e.encodedFrames).put("tracking_samples",e.trackingSamples)
                 .put("hardware_synchronized",false).put("clock_alignment","unverified_offline_required")
                 .put("camera_pose_source","camera_extrinsics_plus_timestamped_head_pose_requires_calibration")
-                .put("app_version","3.0.0-raw").put("files",files);
+                .put("app_version","3.0.1-raw").put("files",files);
             writeAtomic(new File(e.dir,"manifest.json"),manifest.toString());
         }catch(Exception ex){try{writeAtomic(new File(e.dir,"interrupted.json"),new JSONObject().put("reason",ex.toString()).toString());}catch(Exception ignored){}}});
     }
@@ -257,7 +258,7 @@ public final class WarpRawRecorder {
         catch(Exception e){return Long.MAX_VALUE;}
     }
     private List<File> episodes(){File[] all=root.listFiles(File::isDirectory);return all==null?new ArrayList<>():new ArrayList<>(Arrays.asList(all));}
-    private int pending(){int n=0;for(File d:episodes())if(!new File(d,"receipt.json").exists()&&(active==null||!d.equals(active.dir)))n++;return n;}
+    private int pending(){int n=0;for(File d:episodes())if(new File(d,"manifest.json").exists()&&!new File(d,"receipt.json").exists())n++;return n;}
     private void uploadLoop(){int delay=2;while(alive){try{
         List<File> q=episodes();q.sort(Comparator.comparingLong(this::episodeCreated));File next=null;
         for(File d:q)if(new File(d,"manifest.json").exists()&&!new File(d,"receipt.json").exists()){next=d;break;}

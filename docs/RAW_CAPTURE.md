@@ -128,3 +128,19 @@ probe APK from the production native recorder, injects no fake skeleton samples,
 and preserves interrupted camera-only results for inspection. Probe artifacts
 prove the camera/encoder path; the production Unity lifecycle and wearer hand/body
 quality need distinct evidence. Record actual results in release verification notes.
+
+The 3.0.1 raw build guards native start admission while PCA preview is releasing;
+an old native Ready state cannot restart preview during that transition. A pause
+or unmount cancels a pending start. Native stop drains only a session with an
+active repeating request. Upload pending counts sealed, unconfirmed episodes;
+interrupted originals remain protected and consume local capacity separately.
+
+On 2026-10-13, three consecutive approximately 3-second production recordings
+passed with the receiver paused for the first two takes and resumed during the
+third. Start admission took 0.60–0.61 seconds; local finalization took 0.34–0.46
+seconds. The queue reached two pending episodes, recording continued during
+transfer, and all three receipts arrived with zero pending uploads. Sensor,
+encoded, and decoded counts agreed at 102/103/103 frames; observed FPS was 29.85,
+maximum sensor gap 50 ms, with no unmatched frames or duplicate decoded PTS.
+This unworn test verifies capture and transfer; wearer tracking and camera/body
+clock calibration remain separate checks.

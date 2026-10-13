@@ -22,6 +22,8 @@ public class WarpCaptureBridge : MonoBehaviour {
     double lastBodySourceTime;
     double lastBodySeen, nextPoll;
     bool hadBody;
+    bool nativeStartSubmitted;
+    int startGeneration;
     [Serializable] class NativeStatus { public string state,error,upload_state;public int pending,capacity;public double progress;public long free_bytes; }
     [Serializable] class Bone { public int id;public string name;public Vector3 position;public Quaternion rotation; }
     [Serializable] class Sample {
@@ -63,17 +65,19 @@ public class WarpCaptureBridge : MonoBehaviour {
         StartCoroutine(Begin());
     }
     IEnumerator Begin() {
-        Starting=true;status.SetState("Starting…");
+        int generation=++startGeneration;
+        nativeStartSubmitted=false;Starting=true;status.SetState("Starting…");
         camera.ReleasePreview();
         // PCA must release its Camera2 device before native capture owns it.
         double deadline=Time.realtimeSinceStartupAsDouble+2;
         while(camera.cameraAccess!=null&&camera.cameraAccess.IsPlaying&&Time.realtimeSinceStartupAsDouble<deadline)yield return null;
         yield return new WaitForSecondsRealtime(0.2f);
+        if(generation!=startGeneration||!Starting)yield break;
         lastBodyTimestamp=0;lastBodySourceTime=0;hadBody=false;
         bool ok=false;
-        try { if(recorder!=null){recorder.Call("setServerUrl",controller.serverUrl);ok=recorder.Call<bool>("start");} }
+        try { if(recorder!=null){recorder.Call("setServerUrl",controller.serverUrl);nativeStartSubmitted=true;ok=recorder.Call<bool>("start");} }
         catch(Exception e){Debug.LogError("[Warp] Native start: "+e.Message);}
-        if(!ok){Starting=false;status.SetState("Recording error");camera.ResumePreview();}
+        if(!ok){nativeStartSubmitted=false;Starting=false;status.SetState("Recording error");camera.ResumePreview();}
     }
     Pose PoseOf(Transform t) {return t==null?new Pose(Vector3.zero,Quaternion.identity):new Pose(t.position,t.rotation);}
     void OnBody(BodyPoseProvider.PoseData p) {
@@ -98,8 +102,10 @@ public class WarpCaptureBridge : MonoBehaviour {
             UploadText=$"Upload pending · {s.pending}/30";
             UploadDetail=s.upload_state=="Sending"?$"Sending · {s.progress*100:F0}%":s.upload_state=="Idle"?"":s.upload_state;
             if(s.state=="Recording"&&!Armed){Starting=false;Draining=false;Armed=true;status.SetClean(true);status.SetState("Recording");}
-            else if(s.state=="Ready"&&(Armed||Draining||Starting)){Armed=Draining=Starting=false;TrackingText="";status.SetClean(false);status.SetState("Ready");camera.ResumePreview();}
-            else if(s.state=="Recording error"){Armed=Draining=Starting=false;status.SetClean(false);status.SetState(s.error);camera.ResumePreview();}
+            // Native Ready belongs to the previous take until Begin submits start.
+            // Resuming PCA while Begin is releasing it races Camera2 ownership.
+            else if(s.state=="Ready"&&(Armed||Draining||(Starting&&nativeStartSubmitted))){nativeStartSubmitted=false;Armed=Draining=Starting=false;TrackingText="";status.SetClean(false);status.SetState("Ready");camera.ResumePreview();}
+            else if(s.state=="Recording error"&&(!Starting||nativeStartSubmitted)){nativeStartSubmitted=false;Armed=Draining=Starting=false;status.SetClean(false);status.SetState(s.error);camera.ResumePreview();}
         }
         if(!Armed)return;
         var head=new Sample{kind="head_and_tracking_status",coordinate_frame="unity_world_meters_xyzw",time_source="query_utc",
@@ -125,7 +131,12 @@ public class WarpCaptureBridge : MonoBehaviour {
         TrackingText=!head.valid?"Body tracking unavailable":validHands<2?"Hand tracking unavailable":"";
     }
     void Write(Sample s){recorder.Call("appendTracking",JsonUtility.ToJson(s));}
-    void StopWithEvent(string value){if(recorder==null||(!Armed&&!Starting))return;recorder.Call("event",value);recorder.Call("stop");Armed=Starting=false;Draining=true;}
+    void StopWithEvent(string value){
+        if(recorder==null||(!Armed&&!Starting))return;
+        ++startGeneration;
+        if(Starting&&!nativeStartSubmitted){Starting=false;status.SetState("Ready");camera.ResumePreview();return;}
+        recorder.Call("event",value);recorder.Call("stop");Armed=Starting=false;Draining=true;
+    }
     void OnUnmounted(){StopWithEvent("headset_unmounted");}
     void OnRecenter(){if(Armed)recorder.Call("event","tracking_origin_recentered");}
     void OnApplicationPause(bool paused){if(paused)StopWithEvent("application_paused");}
