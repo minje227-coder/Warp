@@ -228,3 +228,13 @@ and coverage even when every accepted state satisfies the same accuracy bounds.
 An initial unrestricted-reuse experiment lost coverage (72 vs 76 of the first
 90 frames), so it was rejected; the guarded variant yielded 77/90 in 22.4s vs
 76/90 in 31.2s. These are short-clip measurements, not full-episode speed claims.
+
+Full-episode performance measurements (4b9f055a, 1396 frames): original 547.41s;
+certified-pruning/cache mode 524.63s, identical valid mask and maximum joint
+trajectory difference 0.0rad; guarded reuse mode 372.11s (32.0% faster), independently
+reverified 1231 accepted frames vs 1228. Guarded reuse retained the existing
+acceptance thresholds but changed reference choices: mean TCP position error
+3.6157 -> 3.6504mm, mean orientation error 1.6764 -> 1.7143deg, cumulative torso
+variation 10.5219 -> 11.0855rad, continuous segments 62 -> 68. Therefore the default
+remains reuse_verified_plan=false. Performance reports are in the ignored
+local_data/retarget/20261014-ik-performance-comparison.json. No robot commands sent.
