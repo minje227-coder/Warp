@@ -110,6 +110,14 @@ class KuavoModel:
         self.frames = [self.plant.GetFrameByName(name) for name in TCP_NAMES]
         self.chest = self.plant.GetFrameByName('waist_yaw_link')
         self.shoulder_local = np.array([0., 0., .227])
+        self.arm_geometry = {}
+        for side, key in (('l', 'left'), ('r', 'right')):
+            origins = {i: self.plant.GetJointByName(f'zarm_{side}{i}_joint').frame_on_parent().GetFixedPoseInBodyFrame().translation() for i in range(1, 8)}
+            tcp = self.plant.CalcRelativeTransform(self.context, self.plant.GetFrameByName(f'zarm_{side}7_link'), self.frames[0 if side == 'l' else 1]).translation()
+            self.arm_geometry[key] = {'shoulder_offset': (origins[1] - self.shoulder_local).tolist(),
+                'upper_length_m': float(np.linalg.norm(origins[4])), 'lower_length_m': float(np.linalg.norm(sum(origins[i] for i in (5, 6, 7)))),
+                'wrist_to_tcp': tcp.tolist(), 'nominal_geometry_only': True}
+        self.metadata['adaptive_offset_geometry'] = self.arm_geometry
         self.elbows = [self.plant.GetFrameByName(f'zarm_{s}4_link') for s in ('l', 'r')]
         self.lower = self.plant.GetPositionLowerLimits()[self.indices] + config['joint_margin_rad']
         self.upper = self.plant.GetPositionUpperLimits()[self.indices] - config['joint_margin_rad']
@@ -180,7 +188,7 @@ class KuavoModel:
             'minimum_near_distance_m': min(near, default=None),
             'speed_rad_s': None if speed is None else speed.tolist(), 'acceleration_rad_s2': None if acceleration is None else acceleration.tolist()}
 
-    def solve(self, goals, base, reference, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy', build_only=False):
+    def solve(self, goals, base, reference, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy', build_only=False, fixed_torso=None):
         start = time.monotonic()
         self.set_q(seed)
         ik = InverseKinematics(self.plant, self.context, with_joint_limits=True)
@@ -197,6 +205,8 @@ class KuavoModel:
         if np.any(lo > hi):
             return None, {'valid': False, 'reason': 'empty_continuity_bounds', 'solve_s': time.monotonic() - start}
         prog.AddBoundingBoxConstraint(lo, hi, q)
+        if fixed_torso is not None:
+            prog.AddBoundingBoxConstraint(fixed_torso, fixed_torso, q[:4])
         rb = yaw_rotation(base[2])
         origin = np.r_[base[:2], 0.]
         tolerance = self.cfg['tcp_position_tolerance_m'] / np.sqrt(3)
@@ -245,6 +255,78 @@ class KuavoModel:
         check = self.validate(solution, base, goals, previous, velocity, dt, velocity_dt)
         check['solve_s'] = time.monotonic() - start
         return (solution if check['valid'] else None), check
+
+    def place_torso(self, position, rotation, base, seed, previous=None, velocity=None, dt=None, velocity_dt=None):
+        """Project the prescribed human/adaptive pose onto the 4-DoF torso.
+
+        Arms are frozen while establishing placement. EEF goals do not participate
+        and cannot buy torso motion by trading off a soft chest weight.
+        """
+        start = time.monotonic()
+        self.set_q(seed)
+        ik = InverseKinematics(self.plant, self.context, with_joint_limits=True)
+        q, prog = ik.q()[self.indices], ik.prog()
+        lo, hi = self.lower[:4].copy(), self.upper[:4].copy()
+        if previous is not None:
+            lo = np.maximum(lo, previous - self.speed[:4] * dt)
+            hi = np.minimum(hi, previous + self.speed[:4] * dt)
+            # Retain enough distance to brake before mechanical position limits.
+            a = self.accel[:4]
+            vhi = np.sqrt((a * dt)**2 + 2 * a * np.maximum(0., self.upper[:4] - previous)) - a * dt
+            vlo = -np.sqrt((a * dt)**2 + 2 * a * np.maximum(0., previous - self.lower[:4])) + a * dt
+            lo = np.maximum(lo, previous + vlo * dt)
+            hi = np.minimum(hi, previous + vhi * dt)
+            if velocity is not None:
+                step = (dt + velocity_dt) / 2
+                lo = np.maximum(lo, previous + (velocity - self.accel[:4] * step) * dt)
+                hi = np.minimum(hi, previous + (velocity + self.accel[:4] * step) * dt)
+        if np.any(lo > hi):
+            return None, {'valid': False, 'reason': 'body_empty_continuity_bounds'}
+        prog.AddBoundingBoxConstraint(lo, hi, q[:4])
+        prog.AddBoundingBoxConstraint(seed[4:], seed[4:], q[4:])
+        from scipy.spatial.transform import Rotation
+        rb = yaw_rotation(base[2])
+        pitch, yaw, unavailable_roll = Rotation.from_matrix(rb.T @ rotation).as_euler('YZX')
+        projected_rotation = Rotation.from_euler('YZ', [pitch, yaw]).as_matrix()
+        # KUAVO torso is R_y(pitch) R_z(yaw); roll is not an independent DOF.
+        # Preserve the represented human orientation as a constraint, not a cost
+        # that can be sacrificed to improve EEF/centroid tracking.
+        ik.AddOrientationConstraint(self.plant.world_frame(), RotationMatrix(projected_rotation), self.chest, RotationMatrix(), self.cfg['torso_orientation_tolerance_rad'])
+        ik.AddPositionCost(self.plant.world_frame(), rb.T @ (position - np.r_[base[:2], 0.]), self.chest, self.shoulder_local, np.eye(3) * self.cfg['placement_position_weight'])
+        ik.AddOrientationCost(self.plant.world_frame(), RotationMatrix(projected_rotation), self.chest, RotationMatrix(), self.cfg['placement_orientation_weight'])
+        prog.AddQuadraticErrorCost(np.eye(4) * self.cfg['placement_continuity_weight'], seed[:4], q[:4])
+        guess = seed.copy()
+        guess[:4] = np.clip(guess[:4], lo, hi)
+        internal = np.empty(18)
+        internal[self.indices] = guess
+        prog.SetInitialGuess(ik.q(), internal)
+        options = SolverOptions()
+        options.SetOption(self.solver.id(), 'Major iterations limit', self.cfg['max_iterations'])
+        options.SetOption(self.solver.id(), 'Major feasibility tolerance', 1e-7)
+        result = self.solver.Solve(prog, None, options)
+        if not result.is_success():
+            return None, {'valid': False, 'reason': 'body_projection_failed', 'solver_result': str(result.get_solution_result())}
+        body = result.GetSolution(q[:4])
+        actual_q = seed.copy()
+        actual_q[:4] = body
+        actual, actual_rotation = self.shoulder_pose(actual_q, base)
+        represented_error = rotation_error(actual_rotation, rb @ projected_rotation)
+        if represented_error > self.cfg['torso_orientation_tolerance_rad'] + 1e-5:
+            return None, {'valid': False, 'reason': 'body_orientation_verification_failed'}
+        return body, {'valid': True, 'reason': 'body_pose_projected', 'position_residual_m': float(np.linalg.norm(actual - position)),
+            'orientation_residual_rad': rotation_error(actual_rotation, rotation), 'represented_orientation_error_rad': represented_error,
+            'unrepresented_human_roll_rad': float(unavailable_roll), 'solve_s': time.monotonic() - start}
+
+    def elbow_targets(self, body, goals, q, base):
+        from .geometry import elbow_reference
+        self.set_q(q)
+        rb = yaw_rotation(base[2])
+        result = []
+        for side, key, goal in zip(('l', 'r'), ('left', 'right'), goals):
+            pose = self.plant.CalcRelativeTransform(self.context, self.plant.world_frame(), self.plant.GetFrameByName(f'zarm_{side}1_link'))
+            shoulder = rb @ pose.translation() + np.r_[base[:2], 0.]
+            result.append(elbow_reference(body, shoulder, goal, self.arm_geometry[key], key))
+        return result
 
     def solve_horizon(self, targets, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy'):
         """Receding-horizon IK anticipates braking before hitting joint boundaries.

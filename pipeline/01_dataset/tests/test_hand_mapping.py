@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 from retarget.geometry import rotation_error
-from retarget.hand_mapping import calibrate_hand, hand_candidates, mcp_pinch_frame, palm_frame
+from retarget.hand_mapping import calibrate_hand, hand_candidates, mcp_pinch_frame, palm_frame, tcp_frame
 
 
 def hand():
@@ -57,3 +57,12 @@ def test_mcp_pinch_axes_and_closed_fingertips_are_independent():
     assert np.allclose(r @ np.diag([-1., 1., -1.]), after['pinch_palm']['rotation'])
     assert after['closing_axis_tip_chord_deg'] is None
     assert np.linalg.det(r) == pytest.approx(1.)
+
+
+def test_selected_tcp_mapping_survives_degenerate_old_index_axis():
+    p=hand();p[10]=p[7].copy();p[5]=p[10].copy()
+    center,rotation,width=tcp_frame(p,np.diag([-1.,1.,-1.]),'mcp_pinch')
+    assert width==0 and np.allclose(center,p[7])
+    assert np.linalg.det(rotation)==pytest.approx(1.)
+    with pytest.raises(ValueError,match='degenerate'):
+        tcp_frame(p,np.eye(3),'legacy_pinch')

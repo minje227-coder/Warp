@@ -90,7 +90,7 @@ def skeleton(scene, points, edges, color, radius):
         geom(scene, mujoco.mjtGeom.mjGEOM_SPHERE, position, [radius * 1.3] * 3, color)
 
 
-def preview(trajectory, output, maximum_seconds=None):
+def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False):
     trajectory, output = Path(trajectory).resolve(), Path(output).resolve()
     manifest = json.loads((trajectory / 'manifest.json').read_text())
     source = Path(manifest['source_episode'])
@@ -174,13 +174,16 @@ def preview(trajectory, output, maximum_seconds=None):
         if row['valid']:
             last_q = (row['q'], row['base_pose'])
             counts['verified'] += 1
-        elif row.get('diagnostic_q') is not None:
+        elif row.get('diagnostic_q') is not None and show_diagnostics:
             last_q = (row['diagnostic_q'], row['diagnostic_base_pose'])
             counts['diagnostic_only'] += 1
         else:
             counts['invalid_held'] += 1
         if last_q is not None:
             q, base = last_q
+            q = np.array(q)
+            if row.get('torso_q') is not None:
+                q[:4] = row['torso_q']
             data.qpos[model.joint('preview_base').qposadr[0]:model.joint('preview_base').qposadr[0] + 7] = [base[0], base[1], 0., np.cos(base[2] / 2), 0., 0., np.sin(base[2] / 2)]
             data.qpos[indices] = q
         mujoco.mj_forward(model, data)
@@ -198,7 +201,8 @@ def preview(trajectory, output, maximum_seconds=None):
                     geom(scene, mujoco.mjtGeom.mjGEOM_CAPSULE, goal['position'], [.003, 0, 0], color, np.array(goal['position']) + rot[:, axis] * .075)
         canvas.paste(Image.fromarray(human_renderer.render()), (640, 80))
         canvas.paste(Image.fromarray(robot_renderer.render()), (1280, 80))
-        status = 'VERIFIED GEOMETRIC FRAME' if row['valid'] else 'INVALID: ' + row['reason'] + (' | diagnostic pose only' if row.get('diagnostic_q') is not None else ' | robot pose held')
+        diagnostic_shown = row.get('diagnostic_q') is not None and show_diagnostics
+        status = 'VERIFIED GEOMETRIC FRAME' if row['valid'] else 'INVALID: ' + row['reason'] + (' | fixed-torso diagnostic' if diagnostic_shown else ' | arm pose held')
         draw.text((20, 694), f'source t={row["elapsed_s"]:.2f}s | playback {1 / time_scale:.2f}x | {status}', font=font, fill='#86efac' if row['valid'] else '#fca5a5')
         if row['valid']:
             errors = row['verification']['tcp_errors']
@@ -232,8 +236,9 @@ def main():
     parser.add_argument('trajectory')
     parser.add_argument('output')
     parser.add_argument('--max-seconds', type=float)
+    parser.add_argument('--show-diagnostics', action='store_true', help='Explicitly show invalid diagnostic IK poses; off by default')
     args = parser.parse_args()
-    print(json.dumps(preview(args.trajectory, args.output, args.max_seconds), indent=2))
+    print(json.dumps(preview(args.trajectory, args.output, args.max_seconds, args.show_diagnostics), indent=2))
 
 
 if __name__ == '__main__':

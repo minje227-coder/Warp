@@ -113,3 +113,73 @@ class TorsoReference:
             self.position = np.array(position, dtype=float)
             self.rotation = np.array(rotation, dtype=float)
         return self.position.copy(), self.rotation.copy(), self.active
+
+
+def adaptive_torso_target(body, goals, geometry):
+    """WARP centroid offset with explicit nominal KUAVO arm geometry.
+
+    This constructs placement BEFORE joint IK. KUAVO's displaced wrist axes
+    make this an approximate placement prior; final IK uses exact URDF FK.
+    """
+    center, rotation = chest_frame(body)
+    expected = []
+    for side, shoulder_id, elbow_id, wrist_id, goal in zip(('left', 'right'), (10, 15), (11, 16), (19, 45), goals):
+        upper = unit(body[elbow_id] - body[shoulder_id])
+        lower = unit(body[wrist_id] - body[elbow_id])
+        g = geometry[side]
+        shoulder = center + rotation @ np.array(g['shoulder_offset'])
+        expected.append(shoulder + g['upper_length_m'] * upper + g['lower_length_m'] * lower + goal['rotation'] @ np.array(g['wrist_to_tcp']))
+    offset = np.mean([g['position'] for g in goals], axis=0) - np.mean(expected, axis=0)
+    return center + offset, rotation, offset
+
+
+def elbow_reference(body, shoulder, goal, geometry, side):
+    """Nominal elbow-circle/half-plane target, verified only by exact arm IK."""
+    si, ei, wi = (10, 11, 19) if side == 'left' else (15, 16, 45)
+    normal_h = unit(np.cross(body[ei] - body[si], body[wi] - body[si]))
+    wrist = goal['position'] - goal['rotation'] @ np.array(geometry['wrist_to_tcp'])
+    delta = wrist - shoulder
+    distance = np.linalg.norm(delta)
+    direction = unit(delta)
+    normal = unit(normal_h - direction * np.dot(normal_h, direction))
+    halfplane = unit(np.cross(direction, normal))
+    u, l = geometry['upper_length_m'], geometry['lower_length_m']
+    along = (u * u - l * l + distance * distance) / (2 * distance)
+    radius = np.sqrt(max(0., u * u - along * along))
+    # Outside the nominal circle workspace this remains only a soft pose guide.
+    return shoulder + along * direction + radius * halfplane
+
+
+class PlacementFilter:
+    """Persistent task-space torso target; arm failures cannot reset it."""
+    def __init__(self, position, rotation, config):
+        self.position = np.array(position, dtype=float)
+        self.rotation = np.array(rotation, dtype=float)
+        self.velocity = np.zeros(3)
+        self.angular_velocity = np.zeros(3)
+        self.cfg = config
+
+    def update(self, position, rotation, dt):
+        if dt <= 0:
+            raise ValueError('invalid_placement_time')
+        omega = 2 * np.pi * self.cfg['frequency_hz']
+        count = max(1, int(np.ceil(dt / .005)))
+        h = dt / count
+        for _ in range(count):
+            error = np.asarray(position) - self.position
+            distance = np.linalg.norm(error)
+            error *= max(0., distance - self.cfg['position_deadband_m']) / max(distance, 1e-12)
+            a = omega**2 * error - 2 * omega * self.velocity
+            a *= min(1., self.cfg['accel_m_s2'] / max(np.linalg.norm(a), 1e-12))
+            self.velocity += h * a
+            self.velocity *= min(1., self.cfg['speed_m_s'] / max(np.linalg.norm(self.velocity), 1e-12))
+            self.position += h * self.velocity
+            error_r = Rotation.from_matrix(self.rotation.T @ rotation).as_rotvec()
+            angle = np.linalg.norm(error_r)
+            error_r *= max(0., angle - self.cfg['angle_deadband_rad']) / max(angle, 1e-12)
+            ar = omega**2 * error_r - 2 * omega * self.angular_velocity
+            ar *= min(1., self.cfg['angular_accel_rad_s2'] / max(np.linalg.norm(ar), 1e-12))
+            self.angular_velocity += h * ar
+            self.angular_velocity *= min(1., self.cfg['angular_speed_rad_s'] / max(np.linalg.norm(self.angular_velocity), 1e-12))
+            self.rotation = self.rotation @ Rotation.from_rotvec(h * self.angular_velocity).as_matrix()
+        return self.position.copy(), self.rotation.copy()

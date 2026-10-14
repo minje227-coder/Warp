@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import numpy as np
 import pytest
-from retarget.geometry import LazyBase, TorsoReference, UNITY_TO_ROS, pinch_frame, rotation_error
+from retarget.geometry import LazyBase, PlacementFilter, TorsoReference, UNITY_TO_ROS, adaptive_torso_target, chest_frame, pinch_frame, rotation_error
 from retarget.input import interpolate, WorldAlignment
 from retarget.convert import validate_config
 
@@ -163,3 +163,45 @@ def test_final_check_rejects_excessive_acceleration(robot):
     check = robot.validate(q, np.zeros(3), goals, previous, np.zeros(18), .01, .01)
     assert not check['valid']
     assert abs(check['acceleration_rad_s2'][0]) > robot.accel[0]
+
+
+def test_adaptive_centroid_placement_preserves_world_goals():
+    body = {1: np.array([0., 0., .8]), 3: np.array([0., 0., 1.]), 10: np.array([0., .25, 1.3]), 15: np.array([0., -.25, 1.3]),
+        11: np.array([.2, .25, 1.1]), 16: np.array([.2, -.25, 1.1]), 19: np.array([.4, .25, 1.1]), 45: np.array([.4, -.25, 1.1])}
+    geometry = {side: {'shoulder_offset': [0., y, 0.], 'upper_length_m': np.sqrt(.08), 'lower_length_m': .2, 'wrist_to_tcp': [0., 0., 0.]} for side, y in (('left', .25), ('right', -.25))}
+    goals = [{'position': body[i].copy() + [0.1, 0., 0.], 'rotation': np.eye(3)} for i in (19, 45)]
+    original = [g['position'].copy() for g in goals]
+    center, _ = chest_frame(body)
+    placement, _, offset = adaptive_torso_target(body, goals, geometry)
+    assert np.allclose(offset, [0.1, 0., 0.])
+    assert np.allclose(placement, center + [0.1, 0., 0.])
+    assert all(np.array_equal(g['position'], p) for g, p in zip(goals, original))
+
+
+def test_placement_filter_remains_continuous_during_arm_failure():
+    f = PlacementFilter(np.zeros(3), np.eye(3), CONFIG['placement'])
+    last = f.position.copy()
+    for _ in range(60):
+        p, rotation = f.update(np.array([.2, 0., -.1]), np.eye(3), .033)
+        assert np.linalg.norm(p - last) <= CONFIG['placement']['speed_m_s'] * .033 + 1e-8
+        last = p.copy()
+    assert p[0] > .1
+    assert np.allclose(rotation, np.eye(3))
+
+
+def test_torso_orientation_cannot_be_sacrificed_to_centroid(robot):
+    q, _ = safe_q(robot)
+    position, rotation = robot.shoulder_pose(q, np.zeros(3))
+    body, check = robot.place_torso(position + [1., 0., -.2], rotation, np.zeros(3), q)
+    assert body is not None and check['valid']
+    assert check['represented_orientation_error_rad'] <= CONFIG['ik']['torso_orientation_tolerance_rad'] + 1e-5
+    assert check['position_residual_m'] > .1
+
+
+def test_arm_ik_cannot_change_prescribed_body(robot):
+    q, goals = safe_q(robot)
+    chest, rotation = robot.shoulder_pose(q, np.zeros(3))
+    reference = {'position': chest + [0., 0., -.2], 'rotation': rotation, 'elbows': [np.array([.3, .3, 1.]), np.array([.3, -.3, 1.])]}
+    solution, check = robot.solve(goals, np.zeros(3), reference, q, fixed_torso=q[:4])
+    assert solution is not None and check['valid']
+    assert np.max(np.abs(solution[:4] - q[:4])) < 1e-7

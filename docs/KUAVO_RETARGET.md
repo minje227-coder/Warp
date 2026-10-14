@@ -70,24 +70,38 @@ and pelvis XY. Human translation is retained thereafter; TCP targets are never
 re-centered every frame or arm-length-scaled. Native body quaternions are not reused.
 The shared body/hand position basis and Quest-to-robot extrinsics remain unverified.
 
-TCP is the thumb/index fingertip midpoint. Hand axes use index direction and the
-thumb/index MCP plane; degenerate frames and large jumps are rejected. Both robot
+TCP is the thumb/index fingertip midpoint. The approved default `mcp_pinch`
+constructs orientation from wrist and thumb/index MCPs, independent of fingertip
+flexion (HumanEgo Eq.6 basis with a constant tool-axis transform).
+`--hand-mapping legacy_pinch` retains the old index-MCP-to-TIP orientation for
+controlled comparisons. Degenerate frames and large jumps are rejected. Both robot
 TCP frames are `zarm_l7_endeffector_center` / `zarm_r7_endeffector_center`.
-The fixed correction aligns robot -Z with index direction and robot X with opening
+The fixed correction aligns robot -Z with the MCP-frame forward direction and robot X with opening
 direction. Its robot/human rest-pose calibration still needs confirmation.
 
 ## Body allocation
 
 Base SE(2) uses WARP's 5cm/0.1rad deadband, 1.5Hz critically damped filter.
-Body 4 joints and both arms 14 joints solve together in Drake SNOPT. Both TCP poses
+The default geometry allocation first derives a two-arm centroid placement from
+human SEW directions and nominal URDF arm lengths, filters the task-space torso
+target, and projects it onto KUAVO's four torso joints. The represented torso
+pitch/yaw orientation is constrained; unrepresentable roll is reported. Torso
+state persists through arm failures. Arms solve numerically with the prescribed
+torso frozen, so EE IK cannot trade torso orientation for hand tracking.
+KUAVO's displaced wrist axes make the geometric prior approximate; this is not
+analytic c-SEW. `--allocation joint` retains the previous coupled baseline.
+Both TCP poses
 are hard constraints (5mm Euclidean position and approximately 2deg orientation).
 Chest/shoulder-center and elbow goals are soft posture references.
 
-Torso reference has position/angle hysteresis. Small sway retains the previous
-reference and uses stronger body motion regularization. Meaningful bend/height/turn
-updates the reference and reduces the motion penalty. First-frame placement is free
-to adapt to embodiment differences. Joint, velocity, acceleration and collision
-constraints remain active in all modes. `--torso-mode follow` gives an ablation.
+The lazy base follows implied upper-body relocation. Initial robot base placement
+is provisional because no robot start state was captured; human/TCP targets remain
+fixed in the source world. Joint, velocity, acceleration and collision checks
+remain active. Accepted segments are not automatically executable across gaps.
+Full prescribed-torso variation includes rejected arm frames; the historical
+accepted-segment metric excludes such gaps and must not be used alone to describe
+the whole preview. Invalid diagnostic arm solutions are hidden by default; use
+`--show-diagnostics` only for explicitly labeled debugging previews.
 Lazy behavior is an added KUAVO design; it is not an original WARP lazy-torso module.
 
 If a preferred lazy base fails, a rate-bounded relocation candidate is tried. TCP

@@ -4,6 +4,16 @@ from scipy.spatial.transform import Rotation
 from .geometry import check_rotation, pinch_frame, unit
 
 
+def tcp_frame(points, correction, method):
+    if method == 'legacy_pinch':
+        return pinch_frame(points, correction)
+    if method != 'mcp_pinch':
+        raise ValueError('unknown_hand_mapping')
+    return ((points[5]+points[10])/2,
+        check_rotation(mcp_pinch_frame(points) @ check_rotation(correction)),
+        float(np.linalg.norm(points[5]-points[10])))
+
+
 def palm_frame(points):
     """Stable proper frame from wrist/index MCP/ring MCP, without fingertip axes.
 
