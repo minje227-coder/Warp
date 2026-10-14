@@ -254,44 +254,61 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 if not base_valid(candidate, previous_base, base_velocity, dt, previous_dt, cfg['base']):
                     checks.append({'valid': False, 'reason': 'base_continuity_bounds'})
                     continue
+                if allocation == 'geometry' and cfg['ik'].get('reuse_verified_plan', False) and warm_plan and len(warm_plan) >= 3:
+                    planned = np.asarray(warm_plan[0]).copy()
+                    planned[:4] = fixed_body
+                    started = time.monotonic()
+                    reuse = model.validate(planned, candidate, goals, previous, velocity, dt, previous_dt)
+                    reuse.update(solve_s=time.monotonic()-started, plan_reuse_attempt=True, planned_remaining_frames=len(warm_plan))
+                    checks.append(reuse)
+                    if reuse['valid']:
+                        solution, accepted_base = planned, candidate
+                        reuse.update(plan_reused=True,horizon_frames=1,horizon_plan_q=[planned.tolist()]+warm_plan[1:])
+                        break
+                horizon_cache = None
                 for initial in seeds:
                     if allocation == 'geometry':
                         ref = dict(reference, elbows=model.elbow_targets(points['body'], goals, initial, candidate))
-                        horizon = [{'goals': goals, 'base': candidate, 'reference': ref, 'ticks': ticks, 'fixed_torso': fixed_body}]
-                        hfilter, pfilter = copy.deepcopy(filter_base), copy.deepcopy(placement_filter)
-                        hfilter.pose = candidate.copy()
-                        hq, hv, hdt, htick = fixed_body.copy(), body_velocity, body_dt, ticks
-                        future_seed = initial.copy()
-                        for future in selected[number + 1:number + cfg['ik']['horizon_frames']]:
-                            try:
-                                ft = future['ticks']
-                                interval = (ft-htick)*1e-7*time_scale
-                                if interval > filter_config['max_gap_s'] or any(htick < d <= ft for d in discontinuities):
+                        if horizon_cache is None:
+                            horizon = [{'goals': goals, 'base': candidate, 'reference': ref, 'ticks': ticks, 'fixed_torso': fixed_body}]
+                            hfilter, pfilter = copy.deepcopy(filter_base), copy.deepcopy(placement_filter)
+                            hfilter.pose = candidate.copy()
+                            hq, hv, hdt, htick = fixed_body.copy(), body_velocity, body_dt, ticks
+                            future_seed = initial.copy()
+                            for future in selected[number + 1:number + cfg['ik']['horizon_frames']]:
+                                try:
+                                    ft = future['ticks']
+                                    interval = (ft-htick)*1e-7*time_scale
+                                    if interval > filter_config['max_gap_s'] or any(htick < d <= ft for d in discontinuities):
+                                        break
+                                    fp = {kind: alignment.points(interpolate(stream, ft, cfg['input']['maximum_bracket_s'], discontinuities)[0]) for kind, stream in streams.items()}
+                                    if max(np.linalg.norm(fp['body'][i]-fp[kind][1]) for i,kind in ((19,'XRHandLeft'),(45,'XRHandRight'))) > cfg['input']['wrist_agreement_m']:
+                                        break
+                                    fg = []
+                                    for side, kind in (('left','XRHandLeft'),('right','XRHandRight')):
+                                        pos, rot, _ = tcp_frame(fp[kind], cfg['hand_to_tcp_rotation'][side], hand_method)
+                                        fg.append({'position':pos,'rotation':rot})
+                                    if any(rotation_error(a['rotation'],b['rotation'])/((ft-htick)*1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a,b in zip(horizon[-1]['goals'],fg)):
+                                        break
+                                    pos,rot,_ = adaptive_torso_target(fp['body'],fg,model.arm_geometry)
+                                    _, cr = chest_frame(fp['body'])
+                                    desired_future = np.r_[pos[:2]-initial_geometry_center[:2]+initial_geometry_base[:2], np.arctan2(cr[1,0],cr[0,0])]
+                                    fb = hfilter.update(desired_future,interval)
+                                    pos,rot = pfilter.update(pos,rot,interval)
+                                    future_seed[:4] = hq
+                                    body, bc = model.place_torso(pos,rot,fb,future_seed,hq,hv,interval,hdt)
+                                    if body is None:
+                                        break
+                                    future_seed[:4] = body
+                                    fr = {'position':pos,'rotation':rot,'elbows':model.elbow_targets(fp['body'],fg,future_seed,fb),'intent_active':True}
+                                    horizon.append({'goals':fg,'base':fb,'reference':fr,'ticks':ft,'fixed_torso':body})
+                                    hv,hq,hdt,htick = (body-hq)/interval,body,interval,ft
+                                except ValueError:
                                     break
-                                fp = {kind: alignment.points(interpolate(stream, ft, cfg['input']['maximum_bracket_s'], discontinuities)[0]) for kind, stream in streams.items()}
-                                if max(np.linalg.norm(fp['body'][i]-fp[kind][1]) for i,kind in ((19,'XRHandLeft'),(45,'XRHandRight'))) > cfg['input']['wrist_agreement_m']:
-                                    break
-                                fg = []
-                                for side, kind in (('left','XRHandLeft'),('right','XRHandRight')):
-                                    pos, rot, _ = tcp_frame(fp[kind], cfg['hand_to_tcp_rotation'][side], hand_method)
-                                    fg.append({'position':pos,'rotation':rot})
-                                if any(rotation_error(a['rotation'],b['rotation'])/((ft-htick)*1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a,b in zip(horizon[-1]['goals'],fg)):
-                                    break
-                                pos,rot,_ = adaptive_torso_target(fp['body'],fg,model.arm_geometry)
-                                _, cr = chest_frame(fp['body'])
-                                desired_future = np.r_[pos[:2]-initial_geometry_center[:2]+initial_geometry_base[:2], np.arctan2(cr[1,0],cr[0,0])]
-                                fb = hfilter.update(desired_future,interval)
-                                pos,rot = pfilter.update(pos,rot,interval)
-                                future_seed[:4] = hq
-                                body, bc = model.place_torso(pos,rot,fb,future_seed,hq,hv,interval,hdt)
-                                if body is None:
-                                    break
-                                future_seed[:4] = body
-                                fr = {'position':pos,'rotation':rot,'elbows':model.elbow_targets(fp['body'],fg,future_seed,fb),'intent_active':True}
-                                horizon.append({'goals':fg,'base':fb,'reference':fr,'ticks':ft,'fixed_torso':body})
-                                hv,hq,hdt,htick = (body-hq)/interval,body,interval,ft
-                            except ValueError:
-                                break
+                            horizon_cache = horizon
+                        else:
+                            horizon = list(horizon_cache)
+                            horizon[0] = dict(horizon[0],reference=ref)
                         lengths = sorted(set([len(horizon), min(3,len(horizon)), min(2,len(horizon)), 1]), reverse=True)
                         for length in lengths:
                             solution, check = model.solve_horizon(horizon[:length], initial, previous, velocity, dt, previous_dt, mode, time_scale=time_scale, warm_plan=warm_plan if np.array_equal(initial,seeds[0]) else None)
@@ -414,6 +431,8 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
     body_rows = [r for r in rows if r.get('torso_q') is not None]
     body_deltas = [np.asarray(b['torso_q'])-a['torso_q'] for a,b in zip(body_rows,body_rows[1:])]
     summary.update(hand_mapping=hand_method,
+        plan_reused_frames=sum(r.get('verification',{}).get('plan_reused',False) for r in rows),
+        certified_pruned_attempts=sum(a['reason'].startswith('certified_') for r in rows for a in r.get('attempts',[])),
         prescribed_torso_total_variation_all_rows_rad=sum(float(np.linalg.norm(d,ord=1)) for d in body_deltas),
         prescribed_torso_max_sample_step_rad=max((float(np.max(np.abs(d))) for d in body_deltas),default=None),
         prescribed_torso_samples=len(body_rows),

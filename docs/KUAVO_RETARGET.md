@@ -210,3 +210,21 @@ the prescribed task-space torso target, not the physical URDF joint velocity cap
 Arm TCP tolerances, joint margins, acceleration limits, collision margins and the
 adaptive arm lookahead remain unchanged. Outputs are regenerated from the original
 tracking samples; no post-IK smoothing or target-position edits are applied.
+
+IK performance (2026-10-14): cache the future torso projection for each base
+candidate across deterministic arm seeds. Conservative prechecks reject only
+empty current continuity bounds, incompatible prescribed torso bounds, or wrist
+positions beyond the sum of the URDF arm joint offsets. The reach certificate is
+inflated by the allowed TCP position error and the maximum wrist displacement
+from the allowed orientation error. Passing the certificate does not imply IK
+success; all accepted output states still undergo the original verification.
+
+`ik.reuse_verified_plan` is experimental and defaults to false. When enabled,
+at least three planned states must remain. A cached arm state is combined with
+the current prescribed torso, then rechecked against current TCP goals, joint
+limits, finite-difference rates, sampled interframe collision and base limits.
+Failure triggers the original fresh solve. This can change the chosen trajectory
+and coverage even when every accepted state satisfies the same accuracy bounds.
+An initial unrestricted-reuse experiment lost coverage (72 vs 76 of the first
+90 frames), so it was rejected; the guarded variant yielded 77/90 in 22.4s vs
+76/90 in 31.2s. These are short-clip measurements, not full-episode speed claims.

@@ -111,8 +111,12 @@ class KuavoModel:
         self.chest = self.plant.GetFrameByName('waist_yaw_link')
         self.shoulder_local = np.array([0., 0., .227])
         self.arm_geometry = {}
+        self.reach_radius = {}
+        self.tcp_rotations = {}
         for side, key in (('l', 'left'), ('r', 'right')):
             origins = {i: self.plant.GetJointByName(f'zarm_{side}{i}_joint').frame_on_parent().GetFixedPoseInBodyFrame().translation() for i in range(1, 8)}
+            self.reach_radius[key] = sum(float(np.linalg.norm(origins[i])) for i in range(2,8))
+            self.tcp_rotations[key] = self.plant.CalcRelativeTransform(self.context, self.plant.GetFrameByName(f'zarm_{side}7_link'), self.frames[0 if side == 'l' else 1]).rotation().matrix()
             tcp = self.plant.CalcRelativeTransform(self.context, self.plant.GetFrameByName(f'zarm_{side}7_link'), self.frames[0 if side == 'l' else 1]).translation()
             self.arm_geometry[key] = {'shoulder_offset': (origins[1] - self.shoulder_local).tolist(),
                 'upper_length_m': float(np.linalg.norm(origins[4])), 'lower_length_m': float(np.linalg.norm(sum(origins[i] for i in (5, 6, 7)))),
@@ -328,6 +332,39 @@ class KuavoModel:
             result.append(elbow_reference(body, shoulder, goal, self.arm_geometry[key], key))
         return result
 
+    def precheck_horizon(self, targets, seed, previous=None, velocity=None, dt=None, velocity_dt=None):
+        """Conservative impossibility certificates, not a numerical IK guess.
+
+        Inflate the URDF chain-length reach bound by *both* allowed TCP position
+        and orientation error. Passing this test never certifies IK feasibility.
+        """
+        if previous is not None:
+            lo=np.maximum(self.lower, previous-self.speed*dt)
+            hi=np.minimum(self.upper, previous+self.speed*dt)
+            if velocity is not None:
+                step=(dt+velocity_dt)/2
+                lo=np.maximum(lo, previous+(velocity-self.accel*step)*dt)
+                hi=np.minimum(hi, previous+(velocity+self.accel*step)*dt)
+            if np.any(lo>hi+1e-9):
+                return {'valid':False,'reason':'certified_empty_continuity_bounds'}
+            body=targets[0].get('fixed_torso')
+            if body is not None and (np.any(body<lo[:4]-1e-7) or np.any(body>hi[:4]+1e-7)):
+                return {'valid':False,'reason':'certified_fixed_torso_continuity_failure'}
+        for index,target in enumerate(targets):
+            body=target.get('fixed_torso')
+            if body is None:
+                continue  # A movable torso has no fixed shoulder certificate.
+            q=seed.copy();q[:4]=body;self.set_q(q)
+            rb=yaw_rotation(target['base'][2]);origin=np.r_[target['base'][:2],0.]
+            for side,key,goal in zip(('l','r'),('left','right'),target['goals']):
+                shoulder=rb @ self.plant.CalcRelativeTransform(self.context,self.plant.world_frame(),self.plant.GetFrameByName(f'zarm_{side}1_link')).translation()+origin
+                offset=np.asarray(self.arm_geometry[key]['wrist_to_tcp'])
+                wrist=goal['position']-goal['rotation'] @ self.tcp_rotations[key].T @ offset
+                allowance=self.cfg['tcp_position_tolerance_m']+2*np.linalg.norm(offset)*np.sin(self.cfg['tcp_orientation_tolerance_rad']/2)+1e-5
+                if np.linalg.norm(wrist-shoulder)>self.reach_radius[key]+allowance:
+                    return {'valid':False,'reason':'certified_outside_arm_reach','horizon_failed_index':index,'arm':key}
+        return None
+
     def solve_horizon(self, targets, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy', time_scale=1., warm_plan=None):
         """Receding-horizon IK anticipates braking before hitting joint boundaries.
 
@@ -337,6 +374,9 @@ class KuavoModel:
         """
         from pydrake.solvers import MathematicalProgram
         start = time.monotonic()
+        certificate=self.precheck_horizon(targets,seed,previous,velocity,dt,velocity_dt)
+        if certificate is not None:
+            return None, dict(certificate,horizon_frames=len(targets),solve_s=time.monotonic()-start)
         if len(targets) < 2:
             t = targets[0]
             return self.solve(t['goals'], t['base'], t['reference'], seed, previous, velocity, dt, velocity_dt, mode, fixed_torso=t.get('fixed_torso'))

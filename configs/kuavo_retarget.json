@@ -127,7 +127,8 @@
       0.0,
       0.0,
       0.0
-    ]
+    ],
+    "reuse_verified_plan": false
   },
   "limit_provenance": {
     "velocity": "User requested full URDF/S63 task.info per-joint speed upper bounds; scale=1.0",

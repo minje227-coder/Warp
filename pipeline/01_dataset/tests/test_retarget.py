@@ -239,3 +239,18 @@ def test_binary_preview_opens_linkage_without_moving_tcp(robot, tmp_path):
             data.qpos[joint.qposadr[0]]=angle
     mujoco.mj_forward(model,data)
     assert all(np.allclose(p,data.xpos[model.body(n).id]) for p,n in zip(positions,TCP_NAMES))
+
+
+def test_reach_certificate_includes_tcp_tolerances(robot):
+    q, goals=safe_q(robot)
+    target=dict(goals=copy.deepcopy(goals),base=np.zeros(3),fixed_torso=q[:4])
+    assert robot.precheck_horizon([target],q) is None
+    robot.set_q(q)
+    shoulder=robot.plant.CalcRelativeTransform(robot.context,robot.plant.world_frame(),robot.plant.GetFrameByName('zarm_l1_link')).translation()
+    offset=np.asarray(robot.arm_geometry['left']['wrist_to_tcp'])
+    allowance=robot.cfg['tcp_position_tolerance_m']+2*np.linalg.norm(offset)*np.sin(robot.cfg['tcp_orientation_tolerance_rad']/2)
+    target['goals'][0]['rotation']=np.eye(3)
+    target['goals'][0]['position']=shoulder+np.array([robot.reach_radius['left']+.5*allowance,0.,0.])+robot.tcp_rotations['left'].T@offset
+    assert robot.precheck_horizon([target],q) is None
+    target['goals'][0]['position']+=np.array([.1,0.,0.])
+    assert robot.precheck_horizon([target],q)['reason']=='certified_outside_arm_reach'
