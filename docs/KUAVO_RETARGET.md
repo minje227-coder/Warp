@@ -238,3 +238,39 @@ acceptance thresholds but changed reference choices: mean TCP position error
 variation 10.5219 -> 11.0855rad, continuous segments 62 -> 68. Therefore the default
 remains reuse_verified_plan=false. Performance reports are in the ignored
 local_data/retarget/20261014-ik-performance-comparison.json. No robot commands sent.
+
+## Bounded torso and hand orientation (2026-10-14)
+
+The default `bounded_torso=true` retains the geometry/lazy placement as an anchor,
+then jointly solves all 18 body/arm coordinates. Each body joint stays within
+0.05 rad of that anchor, shoulder-center displacement is bounded to a 2 cm ball
+by a conservative component box, and chest rotation stays within 0.035 rad of
+the anchor and represented human pitch/yaw. An anchor cost discourages movement.
+Every horizon frame retains full TCP, collision, joint, velocity and acceleration
+constraints; final FK separately verifies the anchor bounds. The fixed-torso
+baseline remains available with `bounded_torso=false`. Plan reuse is disabled
+for this mode. `torso_anchor_q` records the prescribed pose, while valid rows'
+`torso_q` records the solved pose. Invalid arm frames remain discontinuities.
+
+`palm_calibrated` uses wrist/index-MCP/ring-MCP for orientation. A constant rotation
+for each hand is the SO(3) mean of palm-to-existing-MCP-tool rotations during the
+first source second. It is fit without IK success feedback. The transform and
+reference residuals are recorded in the manifest. TCP position remains the
+thumb/index fingertip midpoint, and opening remains their separation. This is
+an estimated demonstration-axis reference, not physical robot contact calibration.
+Raw recordings and timestamps are unchanged; head joints remain zero.
+
+`mcp_filtered` keeps the existing MCP hand-to-tool axes, applying a causal SO(3)
+low-pass estimate before IK (40 ms time constant; maximum lag 3 degrees).
+Invalid tracking, origin/time discontinuities and raw orientation jumps reset
+its state. Raw target rotations are retained per frame; the filter parameters
+are in the manifest. Full TCP orientation verification remains 0.035 rad relative
+to this explicitly corrected target. This does not certify 2-degree agreement
+with raw human rotations or physically calibrated contact axes.
+
+`palm_calibrated` and `index_palm` are comparative experiments, not established
+physical calibrations. Their initial 90-frame results were 38/90 and 72/90;
+bounded torso with the original MCP axes achieved 81/90. A new hand frame is not
+adopted merely because it seems anatomically stable. The default uses the bounded
+MCP orientation filter; the raw MCP baseline is selectable with --hand-mapping
+mcp_pinch. Gripper thresholds and pinch-center position remain unchanged.

@@ -210,7 +210,26 @@ class KuavoModel:
             return None, {'valid': False, 'reason': 'empty_continuity_bounds', 'solve_s': time.monotonic() - start}
         prog.AddBoundingBoxConstraint(lo, hi, q)
         if fixed_torso is not None:
-            prog.AddBoundingBoxConstraint(fixed_torso, fixed_torso, q[:4])
+            if self.cfg.get('bounded_torso', False):
+                radius = self.cfg['torso_adjust_joint_rad']
+                prog.AddBoundingBoxConstraint(np.maximum(self.lower[:4], fixed_torso-radius),
+                                              np.minimum(self.upper[:4], fixed_torso+radius), q[:4])
+                anchor = seed.copy(); anchor[:4] = fixed_torso
+                center, chest_rotation = self.shoulder_pose(anchor, base)
+                rb_anchor = yaw_rotation(base[2]); origin_anchor = np.r_[base[:2], 0.]
+                eps = self.cfg['torso_adjust_position_m']/np.sqrt(3)
+                center_local = rb_anchor.T @ (center-origin_anchor)
+                ik.AddPositionConstraint(self.chest, self.shoulder_local, self.plant.world_frame(), center_local-eps, center_local+eps)
+                ik.AddOrientationConstraint(self.plant.world_frame(), RotationMatrix(rb_anchor.T @ chest_rotation),
+                    self.chest, RotationMatrix(), self.cfg['torso_adjust_orientation_rad'])
+                from scipy.spatial.transform import Rotation
+                pitch, yaw, _ = Rotation.from_matrix(rb_anchor.T @ reference['rotation']).as_euler('YZX')
+                represented = Rotation.from_euler('YZ', [pitch,yaw]).as_matrix()
+                ik.AddOrientationConstraint(self.plant.world_frame(), RotationMatrix(represented), self.chest,
+                    RotationMatrix(), self.cfg['torso_orientation_tolerance_rad'])
+                prog.AddQuadraticErrorCost(np.eye(4)*self.cfg['torso_adjust_weight'], fixed_torso, q[:4])
+            else:
+                prog.AddBoundingBoxConstraint(fixed_torso, fixed_torso, q[:4])
         rb = yaw_rotation(base[2])
         origin = np.r_[base[:2], 0.]
         tolerance = self.cfg['tcp_position_tolerance_m'] / np.sqrt(3)
@@ -257,8 +276,25 @@ class KuavoModel:
             return None, {'valid': False, 'reason': 'ik_infeasible_or_not_converged', 'solver_result': str(result.get_solution_result()), 'solve_s': time.monotonic() - start}
         solution = result.GetSolution(q)
         check = self.validate(solution, base, goals, previous, velocity, dt, velocity_dt)
+        if fixed_torso is not None and not self.torso_adjust_valid(solution, fixed_torso, base, reference):
+            check.update(valid=False, reason='torso_adjustment_bounds')
         check['solve_s'] = time.monotonic() - start
         return (solution if check['valid'] else None), check
+
+    def torso_adjust_valid(self, q, anchor_body, base, reference):
+        if not self.cfg.get('bounded_torso', False):
+            return np.max(np.abs(q[:4]-anchor_body)) <= 1e-7
+        anchor=q.copy(); anchor[:4]=anchor_body
+        ca,ra=self.shoulder_pose(anchor,base); c,r=self.shoulder_pose(q,base)
+        from scipy.spatial.transform import Rotation
+        rb=yaw_rotation(base[2])
+        pitch,yaw,_=Rotation.from_matrix(rb.T @ reference['rotation']).as_euler('YZX')
+        represented=rb @ Rotation.from_euler('YZ',[pitch,yaw]).as_matrix()
+        eps=self.cfg['torso_adjust_position_m']/np.sqrt(3)
+        return (np.max(np.abs(q[:4]-anchor_body)) <= self.cfg['torso_adjust_joint_rad']+1e-6
+                and np.max(np.abs(rb.T @ (c-ca))) <= eps+1e-6
+                and rotation_error(ra,r) <= self.cfg['torso_adjust_orientation_rad']+1e-5
+                and rotation_error(represented,r) <= self.cfg['torso_orientation_tolerance_rad']+1e-5)
 
     def place_torso(self, position, rotation, base, seed, previous=None, velocity=None, dt=None, velocity_dt=None):
         """Project the prescribed human/adaptive pose onto the 4-DoF torso.
@@ -348,11 +384,12 @@ class KuavoModel:
             if np.any(lo>hi+1e-9):
                 return {'valid':False,'reason':'certified_empty_continuity_bounds'}
             body=targets[0].get('fixed_torso')
-            if body is not None and (np.any(body<lo[:4]-1e-7) or np.any(body>hi[:4]+1e-7)):
+            radius=self.cfg.get('torso_adjust_joint_rad',0.) if self.cfg.get('bounded_torso',False) else 0.
+            if body is not None and (np.any(body+radius<lo[:4]-1e-7) or np.any(body-radius>hi[:4]+1e-7)):
                 return {'valid':False,'reason':'certified_fixed_torso_continuity_failure'}
         for index,target in enumerate(targets):
             body=target.get('fixed_torso')
-            if body is None:
+            if body is None or self.cfg.get('bounded_torso',False):
                 continue  # A movable torso has no fixed shoulder certificate.
             q=seed.copy();q[:4]=body;self.set_q(q)
             rb=yaw_rotation(target['base'][2]);origin=np.r_[target['base'][:2],0.]
@@ -422,7 +459,7 @@ class KuavoModel:
         for index, (target, q) in enumerate(zip(targets, plan)):
             interval = dt if index == 0 else (target['ticks'] - targets[index - 1]['ticks']) * 1e-7 * time_scale
             item = self.validate(q, target['base'], target['goals'], last_q, last_v, interval, last_dt)
-            if target.get('fixed_torso') is not None and np.max(np.abs(q[:4] - target['fixed_torso'])) > 1e-7:
+            if target.get('fixed_torso') is not None and not self.torso_adjust_valid(q,target['fixed_torso'],target['base'],target['reference']):
                 item.update(valid=False, reason='horizon_prescribed_torso_changed')
             checks.append(item)
             if not item['valid']:

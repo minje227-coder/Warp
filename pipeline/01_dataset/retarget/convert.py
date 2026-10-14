@@ -11,7 +11,7 @@ import numpy as np
 from .geometry import LazyBase, PlacementFilter, TorsoReference, adaptive_torso_target, chest_frame, check_rotation, pinch_frame, rotation_error, wrap
 from .input import WorldAlignment, interpolate, read_episode, sha256
 from .model import JOINT_NAMES, KuavoModel
-from .hand_mapping import tcp_frame
+from .hand_mapping import tcp_frame, calibrate_palm_axes, HandOrientationFilter
 
 
 def serial(value):
@@ -70,6 +70,10 @@ def validate_config(cfg):
     positive = [('input', 'output_hz'), ('input', 'maximum_bracket_s'), ('input', 'wrist_agreement_m'),
         ('ik', 'tcp_position_tolerance_m'), ('ik', 'tcp_orientation_tolerance_rad'), ('ik', 'collision_margin_m'),
         ('ik', 'torso_accel_rad_s2'), ('ik', 'arm_accel_rad_s2')]
+    if cfg.get('hand_mapping') == 'mcp_filtered':
+        positive.extend(('hand_orientation_filter',key) for key in ('tau_s','maximum_lag_rad'))
+    if cfg['ik'].get('bounded_torso',False):
+        positive.extend(('ik',key) for key in ('torso_adjust_joint_rad','torso_adjust_position_m','torso_adjust_orientation_rad','torso_adjust_weight'))
     for section, key in positive:
         if not np.isfinite(cfg[section][key]) or cfg[section][key] <= 0:
             raise ValueError('Invalid config value: ' + section + '.' + key)
@@ -91,7 +95,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
     cfg = json.loads(Path(config_path).read_text())
     validate_config(cfg)
     hand_method = hand_method or cfg.get('hand_mapping', 'legacy_pinch')
-    if hand_method not in ('mcp_pinch', 'legacy_pinch'):
+    if hand_method not in ('mcp_pinch', 'legacy_pinch', 'palm_calibrated', 'index_palm', 'mcp_filtered'):
         raise ValueError('unknown_hand_mapping')
     if not np.isfinite(time_scale) or time_scale < 1:
         raise ValueError('Time scale must be finite and >=1')
@@ -121,6 +125,57 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
         'execution_time_scale': time_scale, 'note': 'Source timestamps never change; execution time scale is explicit.'}
     dump(staging / 'manifest.json', provenance)
     alignment = None
+    hand_corrections = cfg['hand_to_tcp_rotation']
+    if hand_method == 'palm_calibrated':
+        hand_corrections = {}; calibration = {}
+        for side,kind in (('left','XRHandLeft'),('right','XRHandRight')):
+            samples=[]
+            for sample in streams['body']:
+                if (sample['ticks']-first_tick)*1e-7 > 1.:
+                    break
+                try:
+                    body,_=interpolate(streams['body'],sample['ticks'],cfg['input']['maximum_bracket_s'],discontinuities)
+                    hand,_=interpolate(streams[kind],sample['ticks'],cfg['input']['maximum_bracket_s'],discontinuities)
+                    if np.linalg.norm(body[19 if side=='left' else 45]-hand[1]) > cfg['input']['wrist_agreement_m']:
+                        continue
+                    align=WorldAlignment(body,cfg['world'])
+                    samples.append(align.points(hand))
+                except ValueError:
+                    continue
+            matrix,meta=calibrate_palm_axes(samples,cfg['hand_to_tcp_rotation'][side])
+            hand_corrections[side]=matrix
+            calibration[side]=dict(meta,palm_to_tcp_rotation=matrix.tolist())
+        provenance['hand_axis_reference']=calibration
+        dump(staging/'manifest.json',provenance)
+    filtered_rotations={}
+    if hand_method == 'mcp_filtered':
+        fixed_alignment=None;last_tick=None;last_raw=None
+        filters=[HandOrientationFilter(cfg['hand_orientation_filter']['tau_s'],cfg['hand_orientation_filter']['maximum_lag_rad']) for _ in range(2)]
+        for sample in selected:
+            t=sample['ticks']
+            try:
+                data={k:interpolate(stream,t,cfg['input']['maximum_bracket_s'],discontinuities)[0] for k,stream in streams.items()}
+                if max(np.linalg.norm(data['body'][i]-data[k][1]) for i,k in ((19,'XRHandLeft'),(45,'XRHandRight'))) > cfg['input']['wrist_agreement_m']:
+                    raise ValueError('native_xr_coordinate_disagreement')
+                if fixed_alignment is None:fixed_alignment=WorldAlignment(data['body'],cfg['world'])
+                raw=[tcp_frame(fixed_alignment.points(data[k]),hand_corrections[side],'mcp_pinch')[1] for side,k in (('left','XRHandLeft'),('right','XRHandRight'))]
+                interval=None if last_tick is None else (t-last_tick)*1e-7
+                if interval is not None and (interval>cfg['base']['max_gap_s'] or any(last_tick<d<=t for d in discontinuities)):
+                    interval=None
+                if interval is not None and last_raw is not None and any(rotation_error(a,b)/interval>cfg['input']['maximum_orientation_speed_rad_s'] for a,b in zip(last_raw,raw)):
+                    raise ValueError('hand_orientation_jump')
+                filtered_rotations[t]=[f.update(rot,interval) for f,rot in zip(filters,raw)]
+                last_tick,last_raw=t,raw
+            except ValueError:
+                last_tick=last_raw=None
+                for f in filters:f.rotation=None
+        provenance['hand_orientation_filter']=dict(cfg['hand_orientation_filter'],method='causal_SO3_before_IK; capped_lag; no post_IK_filter; resets_on_invalid_tracking')
+        dump(staging/'manifest.json',provenance)
+
+    def corrected_rotation(rotation,tick,side):
+        if hand_method != 'mcp_filtered':return rotation
+        if tick not in filtered_rotations:raise ValueError('invalid_hand_orientation_source')
+        return filtered_rotations[tick][0 if side=='left' else 1]
     filter_config = dict(cfg['base'], max_gap_s=cfg['base']['max_gap_s'] * time_scale)
     filter_base = LazyBase(filter_config, cfg['world']['initial_base_pose'])
     torso_reference = None
@@ -156,8 +211,8 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
             chest, chest_rotation = chest_frame(points['body'])
             goals, grippers = [], []
             for side, kind in (('left', 'XRHandLeft'), ('right', 'XRHandRight')):
-                p, r, width = tcp_frame(points[kind], cfg['hand_to_tcp_rotation'][side], hand_method)
-                goals.append({'position': p, 'rotation': r})
+                p, r, width = tcp_frame(points[kind], hand_corrections[side], hand_method)
+                goals.append({'position': p, 'rotation': corrected_rotation(r,ticks,side), 'raw_rotation':r})
                 grip = cfg['gripper']
                 grippers.append({'human_pinch_m': width, 'open_fraction': float(np.clip((width - grip['closed_pinch_m']) / (grip['open_pinch_m'] - grip['closed_pinch_m']), 0, 1)), 'calibration_verified': False})
             row.update(tcp_targets=goals, grippers=grippers, human_points={kind: {str(k): v for k, v in value.items()} for kind, value in points.items()},
@@ -254,7 +309,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 if not base_valid(candidate, previous_base, base_velocity, dt, previous_dt, cfg['base']):
                     checks.append({'valid': False, 'reason': 'base_continuity_bounds'})
                     continue
-                if allocation == 'geometry' and cfg['ik'].get('reuse_verified_plan', False) and warm_plan and len(warm_plan) >= 3:
+                if allocation == 'geometry' and cfg['ik'].get('reuse_verified_plan', False) and not cfg['ik'].get('bounded_torso',False) and warm_plan and len(warm_plan) >= 3:
                     planned = np.asarray(warm_plan[0]).copy()
                     planned[:4] = fixed_body
                     started = time.monotonic()
@@ -286,8 +341,8 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                                         break
                                     fg = []
                                     for side, kind in (('left','XRHandLeft'),('right','XRHandRight')):
-                                        pos, rot, _ = tcp_frame(fp[kind], cfg['hand_to_tcp_rotation'][side], hand_method)
-                                        fg.append({'position':pos,'rotation':rot})
+                                        pos, rot, _ = tcp_frame(fp[kind], hand_corrections[side], hand_method)
+                                        fg.append({'position':pos,'rotation':corrected_rotation(rot,ft,side)})
                                     if any(rotation_error(a['rotation'],b['rotation'])/((ft-htick)*1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a,b in zip(horizon[-1]['goals'],fg)):
                                         break
                                     pos,rot,_ = adaptive_torso_target(fp['body'],fg,model.arm_geometry)
@@ -335,8 +390,8 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                             fc, fr = chest_frame(fp)
                             future_goals = []
                             for side, kind in (('left', 'XRHandLeft'), ('right', 'XRHandRight')):
-                                hp, hr, _ = tcp_frame(future_points[kind], cfg['hand_to_tcp_rotation'][side], hand_method)
-                                future_goals.append({'position': hp, 'rotation': hr})
+                                hp, hr, _ = tcp_frame(future_points[kind], hand_corrections[side], hand_method)
+                                future_goals.append({'position': hp, 'rotation': corrected_rotation(hr,future['ticks'],side)})
                             if any(rotation_error(a['rotation'], b['rotation']) / ((future['ticks'] - horizon_tick) * 1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a, b in zip(horizon[-1]['goals'], future_goals)):
                                 break
                             next_base = horizon_base.update(np.r_[fp[1][:2], np.arctan2(fr[1, 0], fr[0, 0])], (future['ticks'] - horizon_tick) * 1e-7)
@@ -381,6 +436,9 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 warm_plan = warm_plan[1:]
             for attempt in checks:
                 attempt.pop('horizon_plan_q', None)
+            if allocation == 'geometry':
+                row['torso_anchor_q'] = row['torso_q']
+                row['torso_q'] = solution[:4].copy()
             seed, previous = solution.copy(), solution.copy()
             velocity, previous_dt, previous_tick = new_velocity, dt, ticks
             previous_base, previous_goals = accepted_base.copy(), goals
@@ -429,7 +487,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
         'gripper_calibration_verified': False, 'environment_collision_verified': False, 'dynamics_verified': False,
         'head_fixed': True, 'physical_motion': False, 'robot_commands_sent': 0, 'allocation': allocation}
     body_rows = [r for r in rows if r.get('torso_q') is not None]
-    body_deltas = [np.asarray(b['torso_q'])-a['torso_q'] for a,b in zip(body_rows,body_rows[1:])]
+    body_deltas = [np.asarray(b.get('torso_anchor_q',b['torso_q']))-a.get('torso_anchor_q',a['torso_q']) for a,b in zip(body_rows,body_rows[1:])]
     summary.update(hand_mapping=hand_method,
         plan_reused_frames=sum(r.get('verification',{}).get('plan_reused',False) for r in rows),
         certified_pruned_attempts=sum(a['reason'].startswith('certified_') for r in rows for a in r.get('attempts',[])),
@@ -457,7 +515,7 @@ def main():
     parser.add_argument('--start-seconds', type=float, default=0.)
     parser.add_argument('--time-scale', type=float, default=1., help='Explicit execution time stretch >=1; source timestamps are unchanged')
     parser.add_argument('--allocation', choices=('geometry', 'joint'), default='geometry', help='Prescribe torso before arms; joint retains the previous baseline')
-    parser.add_argument('--hand-mapping', choices=('mcp_pinch', 'legacy_pinch'))
+    parser.add_argument('--hand-mapping', choices=('mcp_pinch', 'legacy_pinch', 'palm_calibrated', 'index_palm', 'mcp_filtered'))
     args = parser.parse_args()
     if args.max_frames is not None and args.max_frames <= 0 or args.start_seconds < 0:
         parser.error('Frame count must be positive and start time nonnegative')

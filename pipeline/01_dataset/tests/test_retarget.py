@@ -100,7 +100,7 @@ def robot(tmp_path_factory):
     path = os.environ.get('KUAVO_RETARGET_TEST_URDF')
     if not path:
         pytest.skip('Set KUAVO_RETARGET_TEST_URDF for real URDF integration checks')
-    return KuavoModel(path, tmp_path_factory.mktemp('ik'), CONFIG['ik'])
+    return KuavoModel(path, tmp_path_factory.mktemp('ik'), dict(CONFIG['ik'], bounded_torso=False))
 
 
 def safe_q(robot):
@@ -254,3 +254,23 @@ def test_reach_certificate_includes_tcp_tolerances(robot):
     assert robot.precheck_horizon([target],q) is None
     target['goals'][0]['position']+=np.array([.1,0.,0.])
     assert robot.precheck_horizon([target],q)['reason']=='certified_outside_arm_reach'
+
+
+def test_bounded_torso_can_adjust_and_rejects_excess(robot):
+    q,goals=safe_q(robot)
+    base=np.zeros(3)
+    chest,rotation=robot.shoulder_pose(q,base)
+    reference={'position':chest,'rotation':rotation,'elbows':[np.array([.3,.3,1.]),np.array([.3,-.3,1.])]}
+    old=robot.cfg.get('bounded_torso',False)
+    robot.cfg['bounded_torso']=True
+    try:
+        anchor=q[:4].copy(); anchor[3]+=.01
+        assert robot.torso_adjust_valid(q,anchor,base,reference)
+        bad=q.copy(); bad[3]+=.1
+        assert not robot.torso_adjust_valid(bad,anchor,base,reference)
+        targets=[dict(goals=copy.deepcopy(goals),base=base,reference=reference,ticks=i*333333,fixed_torso=anchor) for i in range(3)]
+        solution,check=robot.solve_horizon(targets,q,previous=q,velocity=np.zeros(18),dt=1/30,velocity_dt=1/30)
+        assert solution is not None and check['horizon_all_frames_verified']
+        assert all(robot.torso_adjust_valid(np.array(row),anchor,base,reference) for row in check['horizon_plan_q'])
+    finally:
+        robot.cfg['bounded_torso']=old

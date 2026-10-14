@@ -66,3 +66,49 @@ def test_selected_tcp_mapping_survives_degenerate_old_index_axis():
     assert np.linalg.det(rotation)==pytest.approx(1.)
     with pytest.raises(ValueError,match='degenerate'):
         tcp_frame(p,np.eye(3),'legacy_pinch')
+
+
+def test_calibrated_palm_rejects_thumb_opposition_as_wrist_rotation():
+    from retarget.hand_mapping import calibrate_palm_axes
+    p=hand();c=np.diag([-1.,1.,-1.])
+    fitted,meta=calibrate_palm_axes([p]*10,c)
+    before=tcp_frame(p,fitted,'palm_calibrated')
+    moved=copy.deepcopy(p);moved[3]+=[-.025,.02,-.01];moved[5]=moved[10]+[.003,0,0]
+    after=tcp_frame(moved,fitted,'palm_calibrated')
+    assert rotation_error(before[1],after[1])<1e-8
+    assert rotation_error(before[1],mcp_pinch_frame(p) @ c)<1e-8
+    assert after[2]==pytest.approx(.003)
+    rr=Rotation.from_euler('xyz',[.3,-.4,.1]).as_matrix()
+    rigid=tcp_frame({i:rr @ v+np.array([.1,.2,.3]) for i,v in p.items()},fitted,'palm_calibrated')
+    assert np.allclose(rigid[1],rr @ before[1])
+
+
+def test_index_palm_direction_uses_proximal_index_and_palm_not_thumb():
+    from retarget.hand_mapping import index_palm_frame
+    p=hand();p[8]=np.array([-.015,0.,.11])
+    c=np.diag([-1.,1.,-1.]);before=tcp_frame(p,c,'index_palm')
+    changed=copy.deepcopy(p);changed[3]+=[-.03,.04,-.02];changed[5]=changed[10]+[.003,0,0]
+    after=tcp_frame(changed,c,'index_palm')
+    assert rotation_error(before[1],after[1])<1e-8
+    assert np.allclose(-before[1][:,2],(p[8]-p[7])/np.linalg.norm(p[8]-p[7]))
+    rr=Rotation.from_euler('xyz',[.3,-.4,.1]).as_matrix()
+    moved=tcp_frame({i:rr @ v+np.array([.2,.1,-.3]) for i,v in p.items()},c,'index_palm')
+    assert np.allclose(moved[1],rr @ before[1])
+    changed[8]=changed[7].copy()
+    with pytest.raises(ValueError,match='degenerate'):
+        index_palm_frame(changed)
+
+
+def test_orientation_filter_is_equivariant_and_caps_lag():
+    from retarget.hand_mapping import HandOrientationFilter
+    a=HandOrientationFilter(.04,.05235987756);b=HandOrientationFilter(.04,.05235987756)
+    world=Rotation.from_euler('xyz',[.2,-.4,.8]).as_matrix()
+    for i in range(20):
+        raw=Rotation.from_euler('xyz',[.1*i,(-1)**i*.08,.03*i]).as_matrix()
+        filtered=a.update(raw,None if i==0 else 1/30)
+        transformed=b.update(world @ raw,None if i==0 else 1/30)
+        assert rotation_error(filtered,raw)<=.05235987756+1e-8
+        assert np.allclose(transformed,world @ filtered)
+    a.rotation=None
+    raw=Rotation.from_euler('x',1.2).as_matrix()
+    assert np.allclose(a.update(raw),raw)

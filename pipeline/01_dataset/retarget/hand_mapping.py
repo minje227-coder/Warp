@@ -5,8 +5,14 @@ from .geometry import check_rotation, pinch_frame, unit
 
 
 def tcp_frame(points, correction, method):
+    if method == 'mcp_filtered':
+        method = 'mcp_pinch'
     if method == 'legacy_pinch':
         return pinch_frame(points, correction)
+    if method == 'index_palm':
+        return ((points[5]+points[10])/2, check_rotation(index_palm_frame(points) @ check_rotation(correction)), float(np.linalg.norm(points[5]-points[10])))
+    if method == 'palm_calibrated':
+        return ((points[5]+points[10])/2, check_rotation(palm_frame(points) @ check_rotation(correction)), float(np.linalg.norm(points[5]-points[10])))
     if method != 'mcp_pinch':
         raise ValueError('unknown_hand_mapping')
     return ((points[5]+points[10])/2,
@@ -76,3 +82,46 @@ def hand_candidates(points, calibration, correction):
         'palm_fixed': {'position': fixed, 'rotation': stable},
         'original_pinch': {'position': center, 'rotation': old_rotation},
         'palm_rotation': palm, 'pinch_width_m': width, 'closing_axis_tip_chord_deg': chord_angle}
+
+
+def calibrate_palm_axes(samples, correction):
+    """Constant palm-to-tool transform from a reference window; no IK fitting."""
+    relative=[palm_frame(p).T @ mcp_pinch_frame(p) @ check_rotation(correction) for p in samples]
+    if len(relative)<10:
+        raise ValueError('insufficient_palm_axis_reference')
+    fitted=Rotation.from_matrix(relative).mean().as_matrix()
+    residual=Rotation.from_matrix(np.asarray(relative) @ fitted.T).magnitude()
+    return fitted, {'samples':len(relative),'residual_p95_rad':float(np.percentile(residual,95)),
+        'method':'initial_1s_SO3_mean_palm_to_MCP_tool; no IK fitting', 'robot_contact_calibration_verified':False}
+
+
+def index_palm_frame(points):
+    """Index proximal phalanx approach plus palm plane; no thumb/fingertip axes.
+
+    Robot -Z follows index MCP-to-PIP; projected index-to-ring MCP supplies
+    parallel-jaw roll. This is an explicit geometric mapping, not contact fitting.
+    """
+    forward=unit(points[8]-points[7])
+    lateral=points[17]-points[7]
+    closing=unit(lateral-forward*np.dot(lateral,forward))
+    normal=unit(np.cross(forward,closing))
+    return check_rotation(np.column_stack((closing,normal,forward)))
+
+
+class HandOrientationFilter:
+    """Causal SO(3) filter before IK, with an explicit cap on orientation lag."""
+    def __init__(self,tau_s=.04,max_lag_rad=.05235987756):
+        self.tau=tau_s; self.max_lag=max_lag_rad; self.rotation=None
+
+    def update(self,raw,dt=None):
+        raw=check_rotation(raw)
+        if self.rotation is None or dt is None:
+            self.rotation=raw.copy();return self.rotation.copy()
+        delta=Rotation.from_matrix(self.rotation.T @ raw).as_rotvec()
+        alpha=1-np.exp(-dt/self.tau)
+        result=self.rotation @ Rotation.from_rotvec(delta*alpha).as_matrix()
+        error=Rotation.from_matrix(result.T @ raw).as_rotvec();angle=np.linalg.norm(error)
+        if angle>self.max_lag:
+            result=result @ Rotation.from_rotvec(error*(1-self.max_lag/angle)).as_matrix()
+        self.rotation=check_rotation(result)
+        return self.rotation.copy()
