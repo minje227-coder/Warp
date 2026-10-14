@@ -87,3 +87,49 @@ RGB 화면 위의 정확한 투영은 하지 않는다. 카메라↔추적 시�
 Unix/uptime의 중앙값으로 추정하고, 카메라↔world 외부 보정은 미검증이다.
 3D 패널은 월드 축을 유지하고 손목 이동만 제거하며 전체 녹화에서 같은
 시점/배율을 쓴다. 그리퍼 명령, 실제 로봇 동작, 학습 데이터 승인은 없다.
+
+## RGB 손 위에 실제 그리퍼만 표시
+
+`hand_overlay.py`는 원본 해상도 RGB에 URDF의 두 손가락 그리퍼 메쉬만
+반투명하게 표시한다. 팔, 몸통, 손 골격과 비교 패널은 표시하지 않는다.
+왼손은 하늘색, 오른손은 주황색이다. 메쉬는 TCP 기준의 실제 크기를
+유지하며 표시 성능을 위해 단순화한다. 회전 관절은 URDF 기본 0으로
+고정한다. 개폐 기구/패드 접촉/액추에이터 보정은 아직 하지 않는다.
+
+입력 bundle은 원본 `camera.mp4`, `calibration.json`, `manifest.json`,
+비교 도구의 `hand_targets.jsonl`, 원본 tracking에서 필터한 `head.jsonl`,
+그리고 사용하는 `kuavo_s63_twofinger.urdf`로 구성한다. 원본 episode
+폴더에 bundle을 추가하거나 원본 파일을 수정하지 않는다.
+
+```bash
+python pipeline/01_dataset/retarget/hand_overlay.py BUNDLE NEW_OUTPUT \
+  --mesh-root /path/to/custom_urdf/leju_claw_two_finger/meshes \
+  --hand-model /path/to/hand_landmarker.task
+```
+
+별도 Python 3.12 환경에 `requirements-hand-overlay.txt`를 설치한다.
+MediaPipe의 공식 Hand Landmarker float16/1 모델을 사용한다. 기존
+Drake/녹화/receiver 환경을 변경하지 않는다.
+
+Camera2 `LENS_POSE_REFERENCE=1`은 gyro 기준이며, `LENS_POSE_ROTATION`은
+Android 센서→카메라 회전이다. 따라서 inverse 회전을 사용해 optical
+camera→head→Unity world→ROS world를 구성한다. head 위치는 보간하고
+회전은 SLERP하며, invalid/outside/50ms 초과 head 구간은 그리퍼를
+표시하지 않는다. `head_lines`는 필터한 `head.jsonl`의 행 번호다.
+
+기록된 gyro 기준과 Unity head 원점 사이 관계는 검증되지 않았으므로,
+영상의 손목/MCP 검출점으로 상수 6-DoF optical-frame 보정을 추정한다.
+1초 시간 블록을 번갈아 학습/holdout으로 나누고 오차를 따로 기록한다.
+MediaPipe는 보정 관찰점으로만 사용한다. 실제 표시하는 TCP 위치/방향은
+Quest에서 기록한 MCP 후보이며 매 프레임 영상 손 위치로 snap하지 않는다.
+이 보정은 해당 영상의 진단용 정합이며, 독립적인 headset 외부 보정이나
+카메라/추적 시계 검증으로 인정하지 않는다. 영상 오차가 남을 수 있다.
+
+출력은 `gripper-on-hands.mp4`, `projection-registration.json`,
+`projection-frames.json`, `report.json`이다. report에는 입력과 메쉬의
+SHA-256, 보정/holdout 오차, 표시 프레임 수와 개폐 고정 상태를 저장한다.
+카메라 노출 간격대로 1프레임씩 출력하고 패딩하지 않는다.
+
+근거: [Android CameraCharacteristics](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#LENS_POSE_ROTATION),
+[CameraMetadata](https://developer.android.com/reference/android/hardware/camera2/CameraMetadata#LENS_POSE_REFERENCE_GYROSCOPE),
+[MediaPipe Hand Landmarker](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker/python).
