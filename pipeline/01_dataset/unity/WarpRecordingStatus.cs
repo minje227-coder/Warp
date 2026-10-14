@@ -7,11 +7,12 @@ using UnityEngine;
 public class WarpRecordingStatus : MonoBehaviour
 {
     public WarpCaptureBridge capture;
-    TMP_Text label, uploadLabel;
+    TMP_Text label, uploadLabel, countdownLabel, mountLabel;
     Canvas hud;
     string state = "Preparing…";
     double recordingStart;
     double lastPress = -1;
+    double lastMountPress = -1, mountLockedUntil;
     readonly Dictionary<Canvas, bool> canvasState = new Dictionary<Canvas, bool>();
     readonly Dictionary<Renderer, bool> rendererState = new Dictionary<Renderer, bool>();
     bool clean;
@@ -43,6 +44,21 @@ public class WarpRecordingStatus : MonoBehaviour
         uploadLabel.fontSize = 17; uploadLabel.alignment = TextAlignmentOptions.Center; uploadLabel.raycastTarget = false;
         var uploadRect = upload.GetComponent<RectTransform>();
         uploadRect.sizeDelta = new Vector2(360, 60); uploadRect.anchoredPosition = new Vector2(0, -54);
+        var digit = new GameObject("Countdown", typeof(RectTransform), typeof(TextMeshProUGUI));
+        digit.transform.SetParent(panel.transform, false);
+        countdownLabel = digit.GetComponent<TextMeshProUGUI>();
+        countdownLabel.fontSize = 48; countdownLabel.alignment = TextAlignmentOptions.Center;
+        countdownLabel.color = Color.white; countdownLabel.raycastTarget = false;
+        var digitRect = digit.GetComponent<RectTransform>();
+        digitRect.sizeDelta = new Vector2(360, 72); digitRect.anchoredPosition = new Vector2(0, 54);
+        var mount = new GameObject("MountMode", typeof(RectTransform), typeof(TextMeshProUGUI));
+        mount.transform.SetParent(panel.transform, false);
+        mountLabel = mount.GetComponent<TextMeshProUGUI>();
+        mountLabel.fontSize = 20; mountLabel.alignment = TextAlignmentOptions.Center;
+        mountLabel.raycastTarget = false;
+        var mountRect = mount.GetComponent<RectTransform>();
+        mountRect.sizeDelta = new Vector2(360, 36); mountRect.anchoredPosition = new Vector2(0, -114);
+        SetCountdown(0);
         body = capture.controller.bodyPoseProvider;
         tracker = FindFirstObjectByType<QuestAprilTagTracker>(FindObjectsInactive.Include);
     }
@@ -54,9 +70,22 @@ public class WarpRecordingStatus : MonoBehaviour
         capture.ToggleRecording();
     }
 
+    public void OnVolumeDown(string unused) {
+        double now = Time.realtimeSinceStartupAsDouble;
+        if (now - lastMountPress < 0.35) return;
+        lastMountPress = now;
+        if (!capture.ToggleMountMode()) mountLockedUntil = now + 2;
+    }
+
     public void SetState(string value) {
         state = value;
         if (value == "Recording") recordingStart = Time.realtimeSinceStartupAsDouble;
+    }
+
+    public void SetCountdown(int remaining) {
+        if (countdownLabel == null) return;
+        countdownLabel.text = remaining > 0 ? remaining.ToString() : "";
+        countdownLabel.enabled = remaining > 0;
     }
 
     public void SetClean(bool value) {
@@ -81,6 +110,13 @@ public class WarpRecordingStatus : MonoBehaviour
             label.color = state == "Recording" ? new Color(1f, 0.25f, 0.25f) : Color.white;
         }
         if (uploadLabel != null) uploadLabel.text = capture.UploadText + (string.IsNullOrEmpty(capture.UploadDetail) ? "" : "\n" + capture.UploadDetail) + (string.IsNullOrEmpty(capture.TrackingText) ? "" : "\n" + capture.TrackingText);
+        if (mountLabel != null) {
+            string mode = capture.IsNeckMount ? "NECK" : "HEAD";
+            string action = Time.realtimeSinceStartupAsDouble < mountLockedUntil ? "Stop to switch" :
+                capture.CanChangeMountMode ? "Vol -" : "Locked";
+            mountLabel.text = $"Mount: {mode} | {action}";
+            mountLabel.color = capture.IsNeckMount ? new Color(0.3f, 0.9f, 1f) : Color.white;
+        }
         if (!clean) return;
         if (Time.realtimeSinceStartupAsDouble < nextCleanCheck) return;
         nextCleanCheck = Time.realtimeSinceStartupAsDouble + 1;

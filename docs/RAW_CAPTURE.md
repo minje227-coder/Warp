@@ -1,7 +1,29 @@
 # Quest raw capture v3
 
 The capture package is `com.GTSafeRoboticsLab.xrteleopclient.warp`.
-Volume up starts/stops local recording. Capture readiness does not depend on PC signaling.
+Volume up starts/stops local recording. Before starting, the preview disappears and
+the digits 3, 2, 1 appear just above the existing Ready/status text for one second each,
+without a background panel. The digits disappear before native capture starts.
+Pausing the app cancels a pending countdown; removing the headset also cancels it in HEAD mode.
+Volume down switches HEAD/NECK mounting while idle. The lower-right HUD shows
+`Mount: HEAD | Vol -` or `Mount: NECK | Vol -`; NECK is cyan. The selection persists
+across app restarts. Countdown, recording and saving lock the mode for that take.
+NECK ignores the app's HMD-unmounted stop event and requests Meta's proximity
+close override every two seconds while NECK is selected, with a six-second
+lease. A temporary Activity stop/VR-focus loss retains this override; HEAD,
+Activity finish and Activity destruction release it.
+The selected mode is also mirrored to native preferences so NECK can request the
+override during Activity startup before Unity resumes. No global sleep settings,
+secure settings permissions or separate keep-awake service are changed.
+The broadcast hook is firmware-dependent; APK compilation is not proof that the
+OS accepts it. Verify neck-mode no-sleep behavior and HEAD restore on the headset.
+Other Android/OpenXR pauses still stop recording safely.
+This setting does not alter Meta's skeleton inference
+or fabricate an anatomical head/neck offset.
+Each raw sample and episode manifest records `mount_mode` and `hmd_pose_role`.
+In NECK mode the legacy `head_pose` field is the neck-mounted device pose, not the
+human head pose; `mount_calibration` and neck body accuracy remain unverified.
+Capture readiness does not depend on PC signaling.
 The app records the right passthrough camera at 1280x1280, requested 30 fps,
 using Camera2 -> MediaCodec H.264 Surface -> MediaMuxer MP4 (20 Mbps, 1 s keyframe interval).
 No JPEG conversion, live AprilTag detection, skeleton interpolation, or artificial
@@ -38,7 +60,7 @@ offset drift must also be checked. No valid offset is guessed from callback late
 
 ## Capture and upload states
 
-Main status: Ready -> Starting -> Recording -> Saving -> Ready.
+Main status: Ready -> Starting (3, 2, 1 countdown) -> Recording -> Saving -> Ready.
 Saving waits for in-flight camera metadata, encoder EOS and local logs to close.
 Files are sealed with a manifest before upload. Separate lower HUD text shows
 `Upload pending · N/30` and transfer progress/retry status. Failed partial recordings
@@ -161,3 +183,17 @@ encoded, and decoded counts agreed at 102/103/103 frames; observed FPS was 29.85
 maximum sensor gap 50 ms, with no unmatched frames or duplicate decoded PTS.
 This unworn test verifies capture and transfer; wearer tracking and camera/body
 clock calibration remain separate checks.
+
+## NECK idle return (3.0.6)
+
+NECK returns to HEAD after 20 minutes of idle time measured with Android's
+monotonic elapsed-realtime clock, starting when NECK is entered. Countdown,
+camera startup, recording and native drain protect the proximity override;
+manual mode changes and the idle return cannot release it during capture.
+Native drain completion after camera recording starts a fresh 20-minute idle
+period, including a recording interrupted by failure. Canceling countdown or
+rejected startup resumes the original idle deadline without resetting it. Upload and preview activity do not reset the period. The Android timer
+runs through temporary Unity/VR focus loss, and Unity synchronizes its HUD
+and persisted mode to Android. Loading persisted NECK on a new Activity
+starts a new idle period. The six-second lease still limits process-crash
+residue. No tracking calibration or data-format changes are implied.

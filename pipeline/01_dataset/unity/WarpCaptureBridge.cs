@@ -9,6 +9,11 @@ public class WarpCaptureBridge : MonoBehaviour {
     public bool Armed { get; private set; }
     public bool Draining { get; private set; }
     public bool Starting { get; private set; }
+    const string MountModePreference = "warp_capture_mount_mode";
+    public string MountMode { get; private set; } = "head";
+    public bool IsNeckMount => MountMode == "neck";
+    public bool CanChangeMountMode => !Armed && !Starting && !Draining;
+    string recordingMountMode = "head";
     public string UploadText { get; private set; } = "Upload pending · 0/30";
     public string TrackingText { get; private set; } = "";
     public string UploadDetail { get; private set; } = "";
@@ -27,12 +32,58 @@ public class WarpCaptureBridge : MonoBehaviour {
     [Serializable] class NativeStatus { public string state,error,upload_state;public int pending,capacity;public double progress;public long free_bytes; }
     [Serializable] class Bone { public int id;public string name;public Vector3 position;public Quaternion rotation; }
     [Serializable] class Sample {
-        public string kind,coordinate_frame,time_source;
+        public string kind,coordinate_frame,time_source,mount_mode,hmd_pose_role;
         public long timestamp_ticks,query_start_ticks,query_end_ticks;
         public double ovr_clock_seconds,body_state_time_seconds,unity_realtime_seconds;
         public bool valid,provider_valid,high_confidence;
         public Bone[] bones;
         public Pose head_pose,tracking_origin_pose,provider_transform;
+    }
+    void Awake() {
+        MountMode = PlayerPrefs.GetString(MountModePreference, "head") == "neck" ? "neck" : "head";
+        SyncMountMode();
+    }
+    public bool ToggleMountMode() {
+        if (!CanChangeMountMode) return false;
+        SyncMountMode();
+        MountMode = IsNeckMount ? "head" : "neck";
+        PlayerPrefs.SetString(MountModePreference, MountMode);
+        PlayerPrefs.Save();
+        UpdateProximityMode();
+        Debug.Log("[Warp] Mount mode: " + MountMode);
+        return true;
+    }
+    void UpdateProximityMode() {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try {
+            using(var player=new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using(var activity=player.GetStatic<AndroidJavaObject>("currentActivity"))
+                activity.Call("setNeckMount", IsNeckMount);
+        } catch(Exception e) { Debug.LogError("[Warp] Mount proximity: " + e.Message); }
+#endif
+    }
+    void SyncMountMode() {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try {
+            using(var player=new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using(var activity=player.GetStatic<AndroidJavaObject>("currentActivity")) {
+                string mode=activity.Call<bool>("isNeckMount") ? "neck" : "head";
+                if(MountMode==mode)return;
+                MountMode=mode;
+                PlayerPrefs.SetString(MountModePreference, MountMode);PlayerPrefs.Save();
+                Debug.Log("[Warp] Mount mode synchronized: " + MountMode);
+            }
+        } catch(Exception e) { Debug.LogError("[Warp] Mount sync: " + e.Message); }
+#endif
+    }
+    void SetCaptureBusy(bool value) {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try {
+            using(var player=new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using(var activity=player.GetStatic<AndroidJavaObject>("currentActivity"))
+                activity.Call("setCaptureBusy", value);
+        } catch(Exception e) { Debug.LogError("[Warp] Capture proximity lock: " + e.Message); }
+#endif
     }
     void Start() {
         body=controller.bodyPoseProvider;camera=FindFirstObjectByType<QuestCameraExtractor>(FindObjectsInactive.Include);
@@ -66,18 +117,25 @@ public class WarpCaptureBridge : MonoBehaviour {
     }
     IEnumerator Begin() {
         int generation=++startGeneration;
-        nativeStartSubmitted=false;Starting=true;status.SetState("Starting…");
+        nativeStartSubmitted=false;Starting=true;SetCaptureBusy(true);SyncMountMode();recordingMountMode=MountMode;status.SetState("Starting…");
         camera.ReleasePreview();
         // PCA must release its Camera2 device before native capture owns it.
         double deadline=Time.realtimeSinceStartupAsDouble+2;
         while(camera.cameraAccess!=null&&camera.cameraAccess.IsPlaying&&Time.realtimeSinceStartupAsDouble<deadline)yield return null;
         yield return new WaitForSecondsRealtime(0.2f);
         if(generation!=startGeneration||!Starting)yield break;
+        // Keep the preview released and show only digits before native capture starts.
+        for(int remaining=3;remaining>0;remaining--){
+            status.SetCountdown(remaining);
+            yield return new WaitForSecondsRealtime(1f);
+            if(generation!=startGeneration||!Starting)yield break;
+        }
+        status.SetCountdown(0);
         lastBodyTimestamp=0;lastBodySourceTime=0;hadBody=false;
         bool ok=false;
-        try { if(recorder!=null){recorder.Call("setServerUrl",controller.serverUrl);nativeStartSubmitted=true;ok=recorder.Call<bool>("start");} }
+        try { if(recorder!=null){recorder.Call("setServerUrl",controller.serverUrl);nativeStartSubmitted=true;ok=recorder.Call<bool>("start",recordingMountMode);} }
         catch(Exception e){Debug.LogError("[Warp] Native start: "+e.Message);}
-        if(!ok){nativeStartSubmitted=false;Starting=false;status.SetState("Recording error");camera.ResumePreview();}
+        if(!ok){nativeStartSubmitted=false;Starting=false;SetCaptureBusy(false);status.SetState("Recording error");camera.ResumePreview();}
     }
     Pose PoseOf(Transform t) {return t==null?new Pose(Vector3.zero,Quaternion.identity):new Pose(t.position,t.rotation);}
     void OnBody(BodyPoseProvider.PoseData p) {
@@ -98,14 +156,15 @@ public class WarpCaptureBridge : MonoBehaviour {
         if(recorder==null)return;
         if(Time.realtimeSinceStartupAsDouble>=nextPoll){
             nextPoll=Time.realtimeSinceStartupAsDouble+0.2;
+            SyncMountMode();
             var s=JsonUtility.FromJson<NativeStatus>(recorder.Call<string>("status"));
             UploadText=$"Upload pending · {s.pending}/30";
             UploadDetail=s.upload_state=="Sending"?$"Sending · {s.progress*100:F0}%":s.upload_state=="Idle"?"":s.upload_state;
             if(s.state=="Recording"&&!Armed){Starting=false;Draining=false;Armed=true;status.SetClean(true);status.SetState("Recording");}
             // Native Ready belongs to the previous take until Begin submits start.
             // Resuming PCA while Begin is releasing it races Camera2 ownership.
-            else if(s.state=="Ready"&&(Armed||Draining||(Starting&&nativeStartSubmitted))){nativeStartSubmitted=false;Armed=Draining=Starting=false;TrackingText="";status.SetClean(false);status.SetState("Ready");camera.ResumePreview();}
-            else if(s.state=="Recording error"&&(!Starting||nativeStartSubmitted)){nativeStartSubmitted=false;Armed=Draining=Starting=false;status.SetClean(false);status.SetState(s.error);camera.ResumePreview();}
+            else if(s.state=="Ready"&&(Armed||Draining||(Starting&&nativeStartSubmitted))){nativeStartSubmitted=false;Armed=Draining=Starting=false;SetCaptureBusy(false);TrackingText="";status.SetClean(false);status.SetState("Ready");camera.ResumePreview();}
+            else if(s.state=="Recording error"&&(!Starting||nativeStartSubmitted)){nativeStartSubmitted=false;Armed=Draining=Starting=false;SetCaptureBusy(false);status.SetClean(false);status.SetState(s.error);camera.ResumePreview();}
         }
         if(!Armed)return;
         var head=new Sample{kind="head_and_tracking_status",coordinate_frame="unity_world_meters_xyzw",time_source="query_utc",
@@ -130,14 +189,24 @@ public class WarpCaptureBridge : MonoBehaviour {
         }
         TrackingText=!head.valid?"Body tracking unavailable":validHands<2?"Hand tracking unavailable":"";
     }
-    void Write(Sample s){recorder.Call("appendTracking",JsonUtility.ToJson(s));}
+    void Write(Sample s){
+        s.mount_mode=recordingMountMode;
+        // head_pose is the raw XR device pose retained for schema compatibility,
+        // not an anatomical head measurement when the device is neck-mounted.
+        s.hmd_pose_role=recordingMountMode=="neck"?"neck_mounted_device":"head_mounted_device";
+        recorder.Call("appendTracking",JsonUtility.ToJson(s));
+    }
     void StopWithEvent(string value){
         if(recorder==null||(!Armed&&!Starting))return;
         ++startGeneration;
-        if(Starting&&!nativeStartSubmitted){Starting=false;status.SetState("Ready");camera.ResumePreview();return;}
+        status.SetCountdown(0);
+        if(Starting&&!nativeStartSubmitted){Starting=false;SetCaptureBusy(false);status.SetState("Ready");camera.ResumePreview();return;}
         recorder.Call("event",value);recorder.Call("stop");Armed=Starting=false;Draining=true;
     }
-    void OnUnmounted(){StopWithEvent("headset_unmounted");}
+    void OnUnmounted(){
+        if(!IsNeckMount){StopWithEvent("headset_unmounted");return;}
+        if(Armed)recorder.Call("event","headset_unmounted_neck_mode");
+    }
     void OnRecenter(){if(Armed)recorder.Call("event","tracking_origin_recentered");}
     void OnApplicationPause(bool paused){if(paused)StopWithEvent("application_paused");}
     void OnDestroy(){StopWithEvent("component_destroyed");if(body!=null)body.OnPoseUpdated-=OnBody;OVRManager.HMDUnmounted-=OnUnmounted;if(OVRManager.display!=null)OVRManager.display.RecenteredPose-=OnRecenter;recorder?.Dispose();}

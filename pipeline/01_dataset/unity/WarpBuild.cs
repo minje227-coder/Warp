@@ -20,8 +20,8 @@ public static class WarpBuild
             PlayerSettings.Android.useCustomKeystore = false;
         }
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
-        PlayerSettings.bundleVersion = "3.0.1-raw";
-        PlayerSettings.Android.bundleVersionCode = 30001;
+        PlayerSettings.bundleVersion = "3.0.6-raw";
+        PlayerSettings.Android.bundleVersionCode = 30006;
         var recorderPlugin = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpRawRecorder.java") as PluginImporter;
         if (recorderPlugin == null) throw new Exception("Native raw recorder not imported");
         recorderPlugin.SetCompatibleWithAnyPlatform(false); recorderPlugin.SetCompatibleWithEditor(false);

@@ -34,11 +34,11 @@ public final class WarpRawRecorder {
     private static final long MIN_FREE = 512L * 1024 * 1024;
     private static final long UNIX_TICKS = 621355968000000000L;
     private static class Episode {
-        File dir; String id; CameraDevice camera; CameraCaptureSession session;
+        File dir; String id, mountMode; CameraDevice camera; CameraCaptureSession session;
         MediaCodec codec; MediaMuxer muxer; Surface surface;
         BufferedWriter frames, encoded, tracking, events;
         int track = -1, sensorFrames, encodedFrames; volatile long trackingSamples;
-        boolean muxing, repeatingStarted, finalizeStarted;
+        boolean muxing, repeatingStarted, wasRecording, finalizeStarted;
         volatile boolean stopping, cameraClosed, codecClosed, trackingClosed;
         volatile String failure = ""; volatile boolean finalized;
         long created = System.currentTimeMillis(); JSONObject calibration;
@@ -80,16 +80,30 @@ public final class WarpRawRecorder {
         }catch(Exception e){return "{\"error\":\"camera query failed\"}";}
     }
     private static Byte vendor(CameraCharacteristics c,String name) { for(CameraCharacteristics.Key<?> k:c.getKeys()) if(k.getName().equals(name)) { Object value=c.get(k); if(value instanceof byte[]) { byte[] a=(byte[])value;return a.length==0?null:a[0]; } if(value instanceof Number)return ((Number)value).byteValue(); }return null; }
-    public synchronized boolean start() {
+    private void setCaptureBusy(boolean value) {
+        // Camera smoke probes use a plain Activity without the Unity plugin.
+        try { activity.getClass().getMethod("setCaptureBusy", boolean.class).invoke(activity, value); }
+        catch(NoSuchMethodException ignored) { }
+        catch(ReflectiveOperationException ex) { android.util.Log.e("WarpMount", "Native capture lock failed", ex); }
+    }
+    private void recordingFinished(Episode e) {
+        if(!e.wasRecording) { setCaptureBusy(false); return; }
+        try { activity.getClass().getMethod("onRecordingFinished").invoke(activity); }
+        catch(NoSuchMethodException ignored) { }
+        catch(ReflectiveOperationException ex) { android.util.Log.e("WarpMount", "Native recording-end reset failed", ex); }
+    }
+    public synchronized boolean start(String mountMode) {
         if(active!=null || state.equals("Saving"))return false;
         error="";
         try {
+            if(!"head".equals(mountMode) && !"neck".equals(mountMode))
+                throw new IllegalArgumentException("Invalid mount mode");
             ensureCapacity();
             if(root.getUsableSpace()<MIN_FREE)throw new IOException("Storage low");
-            Episode e=new Episode(new File(root,UUID.randomUUID().toString().replace("-","")));e.dir.mkdir();
+            Episode e=new Episode(new File(root,UUID.randomUUID().toString().replace("-","")));e.mountMode=mountMode;e.dir.mkdir();
             e.frames=writer(e.dir,"camera_frames.jsonl");e.encoded=writer(e.dir,"encoded_frames.jsonl");
             e.tracking=writer(e.dir,"tracking.jsonl");e.events=writer(e.dir,"events.jsonl");
-            active=e;state="Starting";
+            setCaptureBusy(true);active=e;state="Starting";
             event("start"); cameraHandler.post(()->open(e)); return true;
         }catch(Exception ex){error=ex.getMessage();state="Recording error";return false;}
     }
@@ -183,7 +197,7 @@ public final class WarpRawRecorder {
                                         public void onCaptureSequenceAborted(CameraCaptureSession s,int id){
                                             if(e.stopping){e.repeatingStarted=false;if(e.failure.isEmpty())e.failure="Capture sequence aborted before metadata drain";s.close();if(e.camera!=null)e.camera.close();}
                                         }
-                                    },cameraHandler);e.repeatingStarted=true;state="Recording";
+                                    },cameraHandler);e.repeatingStarted=true;e.wasRecording=true;state="Recording";
                                 }catch(Exception ex){fail(e,ex);}
                             }
                             public void onConfigureFailed(CameraCaptureSession session){fail(e,new IOException("Camera encoder configuration failed"));}
@@ -234,7 +248,7 @@ public final class WarpRawRecorder {
         if(!e.stopping||!e.cameraClosed||!e.codecClosed||!e.trackingClosed||e.finalizeStarted)return;
         e.finalizeStarted=true;
         try{e.frames.close();}catch(Exception ex){e.failure=ex.toString();}
-        e.finalized=true;if(active==e)active=null;
+        e.finalized=true;if(active==e){active=null;recordingFinished(e);}
         if(e.failure.isEmpty()&&(e.sensorFrames==0||e.encodedFrames==0||e.trackingSamples==0))e.failure="Missing required camera or tracking samples";
         if(!e.failure.isEmpty()) {
             state="Recording error";error=e.failure;
@@ -248,8 +262,13 @@ public final class WarpRawRecorder {
                 .put("width",1280).put("height",1280).put("requested_fps",30).put("codec","video/avc").put("bitrate",20000000)
                 .put("sensor_frames",e.sensorFrames).put("encoded_frames",e.encodedFrames).put("tracking_samples",e.trackingSamples)
                 .put("hardware_synchronized",false).put("clock_alignment","unverified_offline_required")
-                .put("camera_pose_source","camera_extrinsics_plus_timestamped_head_pose_requires_calibration")
-                .put("app_version","3.0.1-raw").put("files",files);
+                .put("camera_pose_source","camera_extrinsics_plus_timestamped_hmd_device_pose_requires_calibration")
+                .put("mount_mode",e.mountMode)
+                .put("hmd_pose_role",e.mountMode.equals("neck")?"neck_mounted_device":"head_mounted_device")
+                .put("mount_calibration","unverified")
+                .put("body_pose_validation",e.mountMode.equals("neck")?"unverified_neck_mount":"meta_runtime_accuracy_unverified")
+                .put("proximity_policy",e.mountMode.equals("neck")?"periodic_close_override_until_head_or_20min_idle":"normal_sensor")
+                .put("app_version","3.0.6-raw").put("files",files);
             writeAtomic(new File(e.dir,"manifest.json"),manifest.toString());
         }catch(Exception ex){try{writeAtomic(new File(e.dir,"interrupted.json"),new JSONObject().put("reason",ex.toString()).toString());}catch(Exception ignored){}}});
     }
