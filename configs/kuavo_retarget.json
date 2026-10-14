@@ -139,7 +139,10 @@
     "enforce_dynamics": false,
     "joint_braking": false,
     "path_continuity_weight": 2.0,
-    "path_curvature_weight": 1.0
+    "path_curvature_weight": 1.0,
+    "orientation_mode": "box_inward",
+    "box_bend_max_rad": 0.5235987755982988,
+    "hand_orientation_reference_weight": 1.0
   },
   "limit_provenance": {
     "velocity": "User requested full URDF/S63 task.info per-joint speed upper bounds; scale=1.0",

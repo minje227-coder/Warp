@@ -226,7 +226,10 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False, bi
         draw.text((20, 694), f'source t={row["elapsed_s"]:.2f}s | playback {1 / time_scale:.2f}x | {status}', font=font, fill='#86efac' if row['valid'] else '#fca5a5')
         if row['valid']:
             errors = row['verification']['tcp_errors']
-            text = ' | '.join(f'{side}: {e["position_m"] * 1000:.1f}mm / {np.degrees(e["orientation_rad"]):.2f}deg' for side, e in zip(('L TCP', 'R TCP'), errors))
+            if manifest.get('orientation_mode')=='box_inward':
+                text=' | '.join(f'{side}: {e["position_m"]*1000:.1f}mm / ref {np.degrees(e["orientation_rad"]):.1f}deg / jaw {np.degrees(e.get("closing_axis_error_rad",e["orientation_rad"])):.2f}deg' for side,e in zip(('L','R'),errors))
+            else:
+                text = ' | '.join(f'{side}: {e["position_m"] * 1000:.1f}mm / {np.degrees(e["orientation_rad"]):.2f}deg' for side, e in zip(('L TCP', 'R TCP'), errors))
             draw.text((20, 728), text, font=small, fill='white')
         if signals is not None:
             states = ' | '.join(side[0].upper()+': '+str(grip.get('state','unknown')) for side,grip in signals[row_index]['hands'].items())
@@ -234,6 +237,8 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False, bi
         note = 'PREVIEW ONLY: camera/tracking alignment estimated; hand axes uncalibrated; no robot commands; not training-ready'
         if not manifest.get('velocity_acceleration_enforced',True):
             note = 'GEOMETRIC ONLY: replay speed/acceleration pending | camera/tracking alignment estimated | no robot commands'
+        if manifest.get('orientation_mode')=='box_inward':
+            note='BOX-INWARD BEND: estimated midpoint direction | jaw axis constrained | replay timing pending | no robot commands'
         draw.text((20, 766), note, font=small, fill='#fbbf24')
         video_frame = av.VideoFrame.from_image(canvas)
         for packet in stream.encode(video_frame):

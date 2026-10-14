@@ -26,6 +26,17 @@ def dump(path, value):
     Path(path).write_text(json.dumps(value, indent=2, default=serial, allow_nan=False) + '\n')
 
 
+def attach_box_direction(goals, cfg):
+    if cfg['ik'].get('orientation_mode','strict')!='box_inward':return
+    center=np.mean([goal['position'] for goal in goals],axis=0)
+    for goal in goals:
+        direction=center-np.asarray(goal['position'])
+        if np.linalg.norm(direction)>.01:
+            goal['box_direction']=direction/np.linalg.norm(direction)
+            goal['box_center_proxy']=center.copy()
+            goal['box_pose_verified']=False
+
+
 def base_valid(candidate, last, velocity, dt, previous_dt, config):
     if last is None or not config.get("enforce_rate_limits",True):
         return True
@@ -124,7 +135,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
         'config_sha256': sha256(config_path), 'model': model.metadata, 'packages': {n: importlib.metadata.version(n) for n in ('drake', 'numpy', 'scipy', 'trimesh')},
         'implementation_sha256': {p.name: sha256(p) for p in Path(__file__).parent.glob('*.py')},
         'dataset_ready': False, 'physical_motion': False, 'robot_commands_sent': 0, 'camera_tracking_clock_verified': False,
-        'velocity_acceleration_enforced':cfg['ik'].get('enforce_dynamics',True), 'replay_retiming_required':not cfg['ik'].get('enforce_dynamics',True), 'execution_time_scale': time_scale, 'source_window_s':[start_seconds,end_seconds], 'note': 'Source timestamps never change; execution time scale is explicit.'}
+        'orientation_mode':cfg['ik'].get('orientation_mode','strict'), 'box_direction_reference':'bimanual TCP midpoint proxy; not calibrated box pose', 'velocity_acceleration_enforced':cfg['ik'].get('enforce_dynamics',True), 'replay_retiming_required':not cfg['ik'].get('enforce_dynamics',True), 'execution_time_scale': time_scale, 'source_window_s':[start_seconds,end_seconds], 'note': 'Source timestamps never change; execution time scale is explicit.'}
     dump(staging / 'manifest.json', provenance)
     alignment = None
     hand_corrections = cfg['hand_to_tcp_rotation']
@@ -217,6 +228,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 goals.append({'position': p, 'rotation': corrected_rotation(r,ticks,side), 'raw_rotation':r})
                 grip = cfg['gripper']
                 grippers.append({'human_pinch_m': width, 'open_fraction': float(np.clip((width - grip['closed_pinch_m']) / (grip['open_pinch_m'] - grip['closed_pinch_m']), 0, 1)), 'calibration_verified': False})
+            attach_box_direction(goals,cfg)
             row.update(tcp_targets=goals, grippers=grippers, human_points={kind: {str(k): v for k, v in value.items()} for kind, value in points.items()},
                        chest_target={'position': chest, 'rotation': chest_rotation})
             source_dt = None if previous_tick is None else (ticks - previous_tick) * 1e-7
@@ -345,6 +357,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                                     for side, kind in (('left','XRHandLeft'),('right','XRHandRight')):
                                         pos, rot, _ = tcp_frame(fp[kind], hand_corrections[side], hand_method)
                                         fg.append({'position':pos,'rotation':corrected_rotation(rot,ft,side)})
+                                    attach_box_direction(fg,cfg)
                                     if any(rotation_error(a['rotation'],b['rotation'])/((ft-htick)*1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a,b in zip(horizon[-1]['goals'],fg)):
                                         break
                                     pos,rot,_ = adaptive_torso_target(fp['body'],fg,model.arm_geometry)
@@ -396,6 +409,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                             for side, kind in (('left', 'XRHandLeft'), ('right', 'XRHandRight')):
                                 hp, hr, _ = tcp_frame(future_points[kind], hand_corrections[side], hand_method)
                                 future_goals.append({'position': hp, 'rotation': corrected_rotation(hr,future['ticks'],side)})
+                            attach_box_direction(future_goals,cfg)
                             if any(rotation_error(a['rotation'], b['rotation']) / ((future['ticks'] - horizon_tick) * 1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a, b in zip(horizon[-1]['goals'], future_goals)):
                                 break
                             next_base = horizon_base.update(np.r_[fp[1][:2], np.arctan2(fr[1, 0], fr[0, 0])], (future['ticks'] - horizon_tick) * 1e-7)

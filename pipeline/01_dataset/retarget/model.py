@@ -159,6 +159,20 @@ class KuavoModel:
         rb = yaw_rotation(base[2])
         return rb @ (pose.translation() + pose.rotation().matrix() @ self.shoulder_local) + np.r_[base[:2], 0.], rb @ pose.rotation().matrix()
 
+    def orientation_check(self, rotation, goal):
+        nominal=np.asarray(goal['rotation'])
+        error=rotation_error(rotation,nominal)
+        if self.cfg.get('orientation_mode','strict')!='box_inward' or 'box_direction' not in goal:
+            return error<=self.cfg['tcp_orientation_tolerance_rad']+1e-5, {'orientation_rad':error}
+        direction=np.asarray(goal['box_direction']);direction=direction/np.linalg.norm(direction)
+        closing=float(np.arccos(np.clip(np.dot(rotation[:,0],nominal[:,0]),-1,1)))
+        approach=float(np.arccos(np.clip(np.dot(-rotation[:,2],direction),-1,1)))
+        nominal_approach=float(np.arccos(np.clip(np.dot(-nominal[:,2],direction),-1,1)))
+        tol=self.cfg['tcp_orientation_tolerance_rad']
+        valid=(error<=self.cfg['box_bend_max_rad']+tol+1e-5 and closing<=tol+1e-5 and approach<=nominal_approach+tol+1e-5)
+        return valid, {'orientation_rad':error,'closing_axis_error_rad':closing,'box_approach_angle_rad':approach,
+                       'nominal_box_approach_angle_rad':nominal_approach,'orientation_mode':'box_inward'}
+
     def validate(self, q, base, goals, previous=None, velocity=None, dt=None, velocity_dt=None):
         if not np.isfinite(q).all():
             return {'valid': False, 'reason': 'nonfinite_solution'}
@@ -168,12 +182,14 @@ class KuavoModel:
             if np.min(slack)<-1e-5:
                 return {'valid':False,'reason':'joint_braking_distance_failure','minimum_braking_slack_rad':float(np.min(slack))}
         self.set_q(q)
-        errors = [{'position_m': float(np.linalg.norm(p - goal['position'])), 'orientation_rad': rotation_error(r, goal['rotation'])}
-                  for (p, r), goal in zip(self.poses(q, base), goals)]
+        errors=[];orientation_valid=[]
+        for (p,r),goal in zip(self.poses(q,base),goals):
+            accepted,detail=self.orientation_check(r,goal)
+            errors.append(dict(detail,position_m=float(np.linalg.norm(p-goal['position']))));orientation_valid.append(accepted)
         pairs = self.query().ComputeSignedDistancePairwiseClosestPoints(self.cfg['collision_margin_m'] + 1e-6)
         near = [float(p.distance) for p in pairs if p.distance < self.cfg['collision_margin_m'] - 1e-6]
         valid = not near and np.all(q >= self.lower - 1e-7) and np.all(q <= self.upper + 1e-7)
-        valid = bool(valid and all(e['position_m'] <= self.cfg['tcp_position_tolerance_m'] + 1e-5 and e['orientation_rad'] <= self.cfg['tcp_orientation_tolerance_rad'] + 1e-5 for e in errors))
+        valid = bool(valid and all(e['position_m']<=self.cfg['tcp_position_tolerance_m']+1e-5 for e in errors) and all(orientation_valid))
         speed, acceleration = None, None
         if previous is not None:
             if self.cfg.get('enforce_dynamics',True):
@@ -266,7 +282,16 @@ class KuavoModel:
             position = rb.T @ (goal['position'] - origin)
             rotation = rb.T @ goal['rotation']
             ik.AddPositionConstraint(frame, np.zeros(3), self.plant.world_frame(), position - tolerance, position + tolerance)
-            ik.AddOrientationConstraint(self.plant.world_frame(), RotationMatrix(rotation), frame, RotationMatrix(), self.cfg['tcp_orientation_tolerance_rad'])
+            if self.cfg.get('orientation_mode','strict')=='box_inward' and 'box_direction' in goal:
+                tol=self.cfg['tcp_orientation_tolerance_rad']
+                ik.AddOrientationConstraint(self.plant.world_frame(),RotationMatrix(rotation),frame,RotationMatrix(),self.cfg['box_bend_max_rad']+tol)
+                ik.AddAngleBetweenVectorsConstraint(frame,np.array([1.,0.,0.]),self.plant.world_frame(),rotation[:,0],0.,tol)
+                direction=rb.T @ np.asarray(goal['box_direction']);direction=direction/np.linalg.norm(direction)
+                nominal_angle=float(np.arccos(np.clip(np.dot(-rotation[:,2],direction),-1,1)))
+                ik.AddAngleBetweenVectorsConstraint(frame,np.array([0.,0.,-1.]),self.plant.world_frame(),direction,0.,min(np.pi,nominal_angle+tol))
+                ik.AddOrientationCost(self.plant.world_frame(),RotationMatrix(rotation),frame,RotationMatrix(),self.cfg['hand_orientation_reference_weight'])
+            else:
+                ik.AddOrientationConstraint(self.plant.world_frame(), RotationMatrix(rotation), frame, RotationMatrix(), self.cfg['tcp_orientation_tolerance_rad'])
         ik.AddMinimumDistanceLowerBoundConstraint(self.cfg['collision_margin_m'], .02)
         position = rb.T @ (reference['position'] - origin)
         rotation = rb.T @ reference['rotation']
@@ -426,7 +451,10 @@ class KuavoModel:
                 shoulder=rb @ self.plant.CalcRelativeTransform(self.context,self.plant.world_frame(),self.plant.GetFrameByName(f'zarm_{side}1_link')).translation()+origin
                 offset=np.asarray(self.arm_geometry[key]['wrist_to_tcp'])
                 wrist=goal['position']-goal['rotation'] @ self.tcp_rotations[key].T @ offset
-                allowance=self.cfg['tcp_position_tolerance_m']+2*np.linalg.norm(offset)*np.sin(self.cfg['tcp_orientation_tolerance_rad']/2)+1e-5
+                angle=self.cfg['tcp_orientation_tolerance_rad']
+                if self.cfg.get('orientation_mode','strict')=='box_inward' and 'box_direction' in goal:
+                    angle+=self.cfg['box_bend_max_rad']
+                allowance=self.cfg['tcp_position_tolerance_m']+2*np.linalg.norm(offset)*np.sin(angle/2)+1e-5
                 if np.linalg.norm(wrist-shoulder)>self.reach_radius[key]+allowance:
                     return {'valid':False,'reason':'certified_outside_arm_reach','horizon_failed_index':index,'arm':key}
         return None

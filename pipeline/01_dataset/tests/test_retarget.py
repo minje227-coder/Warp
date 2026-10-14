@@ -325,3 +325,27 @@ def test_geometric_base_validation_does_not_enforce_replay_rates():
     assert base_valid(np.array([1.,0.,0.]),np.zeros(3),np.zeros(3),1e-5,1e-5,cfg)
     cfg['enforce_rate_limits']=True
     assert not base_valid(np.array([1.,0.,0.]),np.zeros(3),np.zeros(3),1e-5,1e-5,cfg)
+
+
+def test_box_inward_bend_preserves_jaw_axis_and_rejects_away_rotation(robot):
+    from scipy.spatial.transform import Rotation
+    q,goals=safe_q(robot);base=np.zeros(3)
+    saved=dict(robot.cfg)
+    robot.cfg.update(orientation_mode='box_inward',box_bend_max_rad=np.pi/6,hand_orientation_reference_weight=1.)
+    try:
+        for goal in goals:
+            actual=np.asarray(goal['rotation']).copy()
+            goal['rotation']=actual @ Rotation.from_euler('x',-.35).as_matrix()
+            goal['box_direction']=-actual[:,2]
+            accepted,detail=robot.orientation_check(actual,goal)
+            assert accepted and detail['orientation_rad']>.3 and detail['closing_axis_error_rad']<1e-7
+            away=dict(goal,box_direction=-goal['rotation'][:,2])
+            assert not robot.orientation_check(actual,away)[0]
+            assert not robot.orientation_check(actual @ Rotation.from_euler('z',.1).as_matrix(),goal)[0]
+        assert robot.validate(q,base,goals)['valid']
+        chest,r=robot.shoulder_pose(q,base)
+        ref={'position':chest,'rotation':r,'elbows':[np.array([.3,.3,1.]),np.array([.3,-.3,1.])]}
+        solution,check=robot.solve(goals,base,ref,q)
+        assert solution is not None and check['valid']
+    finally:
+        robot.cfg.clear();robot.cfg.update(saved)
