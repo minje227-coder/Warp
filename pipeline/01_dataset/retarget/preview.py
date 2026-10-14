@@ -19,14 +19,16 @@ BODY_EDGES = [(7, 6), (6, 5), (5, 3), (3, 1), (5, 10), (10, 11), (11, 19),
 HAND_EDGES = [(1, 3), (3, 5), (1, 7), (7, 10)]
 
 
-def render_model(urdf, cache):
+def render_model(urdf, cache, binary_gripper=False):
     import trimesh
     tree = ET.parse(urdf)
     root = tree.getroot()
     assets = Path(urdf).resolve().parent
     cache.mkdir(parents=True, exist_ok=True)
+    from .gripper_signal import linkage_angles
+    gripper_names = set(linkage_angles('left', True)) | set(linkage_angles('right', True)) if binary_gripper else set()
     for joint in root.findall('joint'):
-        if joint.get('type') != 'fixed' and joint.get('name') not in JOINT_NAMES:
+        if joint.get('type') != 'fixed' and joint.get('name') not in set(JOINT_NAMES) | gripper_names:
             joint.set('type', 'fixed')
             for child in list(joint):
                 if child.tag not in ('origin', 'parent', 'child'):
@@ -90,7 +92,7 @@ def skeleton(scene, points, edges, color, radius):
         geom(scene, mujoco.mjtGeom.mjGEOM_SPHERE, position, [radius * 1.3] * 3, color)
 
 
-def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False):
+def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False, binary_gripper=False):
     trajectory, output = Path(trajectory).resolve(), Path(output).resolve()
     manifest = json.loads((trajectory / 'manifest.json').read_text())
     source = Path(manifest['source_episode'])
@@ -119,7 +121,20 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False):
         if abs(int(sensor[i]) - ns) > 2000:
             raise ValueError('Cannot associate encoded frame with exposure')
         video_ns.append(int(sensor[i]) + offset)
-    model = render_model(urdf, trajectory / 'preview_model')
+    signals, grip_calibration = None, None
+    if binary_gripper:
+        from .gripper_signal import binary_signals
+        grip_rows = []
+        for row in rows:
+            hands = {}
+            for index, side in enumerate(('left','right')):
+                available = row.get('grippers') is not None
+                hands[side] = {'valid': available, 'reason':row['reason'], 'candidates': {'pinch_width_m':row['grippers'][index]['human_pinch_m']} if available else {}}
+            grip_rows.append(dict(index=row['index'],elapsed_s=row['elapsed_s'],hands=hands))
+        signals, grip_calibration = binary_signals(grip_rows)
+        output.with_suffix('.gripper-signals.json').parent.mkdir(parents=True,exist_ok=True)
+        output.with_suffix('.gripper-signals.json').write_text(json.dumps({'calibration':grip_calibration,'frames':signals},indent=2)+'\n')
+    model = render_model(urdf, trajectory / ('preview_model_binary' if binary_gripper else 'preview_model'), binary_gripper)
     data = mujoco.MjData(model)
     human_model = mujoco.MjModel.from_xml_string('<mujoco><visual><global offwidth="640" offheight="600"/></visual><worldbody><light pos="0 0 5"/><geom type="plane" size="8 8 .1" rgba=".18 .22 .28 1"/></worldbody></mujoco>')
     human_data = mujoco.MjData(human_model)
@@ -186,6 +201,11 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False):
                 q[:4] = row['torso_q']
             data.qpos[model.joint('preview_base').qposadr[0]:model.joint('preview_base').qposadr[0] + 7] = [base[0], base[1], 0., np.cos(base[2] / 2), 0., 0., np.sin(base[2] / 2)]
             data.qpos[indices] = q
+        if signals is not None:
+            for side, grip in signals[row_index]['hands'].items():
+                if grip['valid']:
+                    for name, angle in grip['joint_targets'].items():
+                        data.qpos[model.joint(name).qposadr[0]] = angle
         mujoco.mj_forward(model, data)
         human_renderer.update_scene(human_data, camera=camera_view)
         robot_renderer.update_scene(data, camera=camera_view)
@@ -208,6 +228,9 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False):
             errors = row['verification']['tcp_errors']
             text = ' | '.join(f'{side}: {e["position_m"] * 1000:.1f}mm / {np.degrees(e["orientation_rad"]):.2f}deg' for side, e in zip(('L TCP', 'R TCP'), errors))
             draw.text((20, 728), text, font=small, fill='white')
+        if signals is not None:
+            states = ' | '.join(side[0].upper()+': '+str(grip.get('state','unknown')) for side,grip in signals[row_index]['hands'].items())
+            draw.text((1300,728), states+' (preview)',font=small,fill='#fbbf24')
         draw.text((20, 766), 'PREVIEW ONLY: camera/tracking alignment estimated; hand axes uncalibrated; no robot commands; not training-ready', font=small, fill='#fbbf24')
         video_frame = av.VideoFrame.from_image(canvas)
         for packet in stream.encode(video_frame):
@@ -226,6 +249,7 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False):
     result = {'video': str(output), 'video_sha256': sha256(output), 'fps': fps, 'duration_s': duration, 'execution_time_scale': time_scale,
         'camera_to_utc_offset_ns_preview_estimate': offset, 'clock_offset_range_ns': max(offsets) - min(offsets),
         'camera_tracking_clock_verified': False, 'frame_counts': counts, 'physical_motion': False,
+        'binary_gripper_preview':binary_gripper,'gripper_calibration':grip_calibration,'opened_gripper_collision_verified':False,
         'note': 'CFR is a visualization only. Invalid poses/held panels are labeled and never inserted into the trajectory.'}
     output.with_suffix('.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
@@ -237,8 +261,9 @@ def main():
     parser.add_argument('output')
     parser.add_argument('--max-seconds', type=float)
     parser.add_argument('--show-diagnostics', action='store_true', help='Explicitly show invalid diagnostic IK poses; off by default')
+    parser.add_argument('--binary-gripper', action='store_true', help='Preview-only binary linkage; arm IK collision model remains neutral gripper')
     args = parser.parse_args()
-    print(json.dumps(preview(args.trajectory, args.output, args.max_seconds, args.show_diagnostics), indent=2))
+    print(json.dumps(preview(args.trajectory, args.output, args.max_seconds, args.show_diagnostics, args.binary_gripper), indent=2))
 
 
 if __name__ == '__main__':

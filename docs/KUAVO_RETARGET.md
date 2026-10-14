@@ -179,3 +179,25 @@ KUAVO_RETARGET_TEST_URDF=/home/lab6/humanoid/git/kuavo_ros_application/data_coll
 Tests include invalid/gapped interpolation, handedness and pinch degeneracy, world
 translation preservation, lazy base/torso behavior, real URDF IK, impossible targets,
 mechanical/acceleration rejection and independent MuJoCo/Drake TCP FK agreement.
+
+Geometry arm lookahead (2026-10-14): `horizon_frames=5` now also applies to
+geometry allocation. Future base and torso placement are predicted using copies
+of the same filters and URDF torso projector, without committing those states.
+Each frame's torso is prescribed; the arm optimizer cannot move it to buy TCP
+accuracy. The optimizer constrains actual timestamp-based finite-difference
+velocity and acceleration across the window and independently validates every
+planned frame, including sampled interframe collisions. Only the first solution
+is committed, with the remaining solution shifted as the next warm start.
+
+If the requested window is infeasible or fails convergence/validation, lengths
+3, 2 and 1 are attempted. This preserves strict current-frame acceptance without
+claiming a longer feasible continuation. The successful window length and failed
+attempts are stored. Up to three deterministic seeds (previous, velocity-predicted,
+configured reference pose) are attempted; this is numerical SEW-guided IK and does
+not reproduce WARP's analytical unique-solution guarantee. Rejected input still
+splits segments, and no states are connected across those gaps.
+
+`retarget.preview --binary-gripper` animates only the custom URDF's actual
+revolute linkage joints using episode P20/P80 closing-score calibration and the
+0.35/0.65 hysteresis thresholds. This is display-only. The arm collision model
+still freezes grippers at neutral; opened and swept gripper collision is unverified.

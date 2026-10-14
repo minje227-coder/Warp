@@ -133,6 +133,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
     seed = np.array(cfg['ik']['initial_q'], dtype=float)
     previous = velocity = previous_base = base_velocity = previous_dt = previous_tick = None
     previous_goals = None
+    warm_plan = None
     previous_filter_tick = None
     segment = 0
     rows, wall_start = [], time.monotonic()
@@ -234,6 +235,16 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 candidates.append(retry)
             checks, solution, accepted_base = [], None, None
             seeds = [seed]
+            if allocation == 'geometry' and cfg['ik'].get('arm_seed_candidates', 1) > 1:
+                predicted = seed.copy()
+                if previous is not None and velocity is not None:
+                    predicted = np.clip(previous + velocity * dt, model.lower, model.upper)
+                alternate = np.asarray(cfg['ik']['initial_q'], dtype=float).copy()
+                for extra in (predicted, alternate):
+                    extra[:4] = fixed_body
+                    if not any(np.allclose(extra, old) for old in seeds):
+                        seeds.append(extra)
+                seeds = seeds[:cfg['ik']['arm_seed_candidates']]
             if previous is None and allocation == 'joint':
                 for knee, leg, pitch in ((.4, -.8, .4), (.8, -1.5, .7)):
                     extra = seed.copy()
@@ -245,9 +256,50 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                     continue
                 for initial in seeds:
                     if allocation == 'geometry':
-                        reference['elbows'] = model.elbow_targets(points['body'], goals, initial, candidate)
-                        solution, check = model.solve(goals, candidate, reference, initial, previous, velocity, dt, previous_dt, mode, fixed_torso=fixed_body)
-                        checks.append(check)
+                        ref = dict(reference, elbows=model.elbow_targets(points['body'], goals, initial, candidate))
+                        horizon = [{'goals': goals, 'base': candidate, 'reference': ref, 'ticks': ticks, 'fixed_torso': fixed_body}]
+                        hfilter, pfilter = copy.deepcopy(filter_base), copy.deepcopy(placement_filter)
+                        hfilter.pose = candidate.copy()
+                        hq, hv, hdt, htick = fixed_body.copy(), body_velocity, body_dt, ticks
+                        future_seed = initial.copy()
+                        for future in selected[number + 1:number + cfg['ik']['horizon_frames']]:
+                            try:
+                                ft = future['ticks']
+                                interval = (ft-htick)*1e-7*time_scale
+                                if interval > filter_config['max_gap_s'] or any(htick < d <= ft for d in discontinuities):
+                                    break
+                                fp = {kind: alignment.points(interpolate(stream, ft, cfg['input']['maximum_bracket_s'], discontinuities)[0]) for kind, stream in streams.items()}
+                                if max(np.linalg.norm(fp['body'][i]-fp[kind][1]) for i,kind in ((19,'XRHandLeft'),(45,'XRHandRight'))) > cfg['input']['wrist_agreement_m']:
+                                    break
+                                fg = []
+                                for side, kind in (('left','XRHandLeft'),('right','XRHandRight')):
+                                    pos, rot, _ = tcp_frame(fp[kind], cfg['hand_to_tcp_rotation'][side], hand_method)
+                                    fg.append({'position':pos,'rotation':rot})
+                                if any(rotation_error(a['rotation'],b['rotation'])/((ft-htick)*1e-7) > cfg['input']['maximum_orientation_speed_rad_s'] for a,b in zip(horizon[-1]['goals'],fg)):
+                                    break
+                                pos,rot,_ = adaptive_torso_target(fp['body'],fg,model.arm_geometry)
+                                _, cr = chest_frame(fp['body'])
+                                desired_future = np.r_[pos[:2]-initial_geometry_center[:2]+initial_geometry_base[:2], np.arctan2(cr[1,0],cr[0,0])]
+                                fb = hfilter.update(desired_future,interval)
+                                pos,rot = pfilter.update(pos,rot,interval)
+                                future_seed[:4] = hq
+                                body, bc = model.place_torso(pos,rot,fb,future_seed,hq,hv,interval,hdt)
+                                if body is None:
+                                    break
+                                future_seed[:4] = body
+                                fr = {'position':pos,'rotation':rot,'elbows':model.elbow_targets(fp['body'],fg,future_seed,fb),'intent_active':True}
+                                horizon.append({'goals':fg,'base':fb,'reference':fr,'ticks':ft,'fixed_torso':body})
+                                hv,hq,hdt,htick = (body-hq)/interval,body,interval,ft
+                            except ValueError:
+                                break
+                        lengths = sorted(set([len(horizon), min(3,len(horizon)), min(2,len(horizon)), 1]), reverse=True)
+                        for length in lengths:
+                            solution, check = model.solve_horizon(horizon[:length], initial, previous, velocity, dt, previous_dt, mode, time_scale=time_scale, warm_plan=warm_plan if np.array_equal(initial,seeds[0]) else None)
+                            check['seed_attempt'] = next(i for i,x in enumerate(seeds) if x is initial)
+                            check['requested_horizon_frames'] = len(horizon)
+                            checks.append(check)
+                            if solution is not None:
+                                break
                         if solution is not None:
                             accepted_base = candidate
                             break
@@ -307,6 +359,11 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 new_velocity, base_velocity = None, None
             row.update(valid=True, reason='verified_kinematic_frame', q=solution, base_pose=accepted_base,
                 verification=checks[-1], first_frame_of_segment=previous is None, base_reachability_retry=not np.allclose(accepted_base, preferred))
+            warm_plan = checks[-1].pop('horizon_plan_q', None)
+            if warm_plan is not None:
+                warm_plan = warm_plan[1:]
+            for attempt in checks:
+                attempt.pop('horizon_plan_q', None)
             seed, previous = solution.copy(), solution.copy()
             velocity, previous_dt, previous_tick = new_velocity, dt, ticks
             previous_base, previous_goals = accepted_base.copy(), goals
@@ -315,6 +372,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                 filter_base.velocity = base_velocity.copy()
         except ValueError as exc:
             row['reason'] = str(exc)
+            warm_plan = None
             # Never silently connect trajectories across rejected frames.
             previous = velocity = previous_base = base_velocity = previous_tick = previous_dt = previous_goals = None
             if allocation == 'joint':

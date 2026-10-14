@@ -22,7 +22,7 @@
     "chest_position_weight": 100.0, "chest_orientation_weight": 10.0, "elbow_weight": 2.0,
     "torso_motion_weight": 50.0, "torso_intent_motion_weight": 3.0, "torso_follow_motion_weight": 0.05,
     "arm_continuity_weight": 0.02, "acceleration_weight": 0.01, "max_iterations": 180,
-    "horizon_frames": 1, "horizon_acceleration_weight": 0.002, "horizon_velocity_weight": 0.002,
+    "horizon_frames": 5, "arm_seed_candidates": 3, "horizon_acceleration_weight": 0.002, "horizon_velocity_weight": 0.002,
     "placement_position_weight": 1000.0, "placement_orientation_weight": 100.0, "placement_continuity_weight": 0.1,
     "torso_orientation_tolerance_rad": 0.035,
     "initial_q": [0.6, -1.1, 0.5, 0.0, -0.35, 0.35, 0.0, -1.0, 0.0, 0.0, 0.0, -0.35, -0.35, 0.0, -1.0, 0.0, 0.0, 0.0]

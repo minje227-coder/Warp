@@ -328,7 +328,7 @@ class KuavoModel:
             result.append(elbow_reference(body, shoulder, goal, self.arm_geometry[key], key))
         return result
 
-    def solve_horizon(self, targets, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy'):
+    def solve_horizon(self, targets, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy', time_scale=1., warm_plan=None):
         """Receding-horizon IK anticipates braking before hitting joint boundaries.
 
         All horizon frames retain pose/collision/position constraints. Shared
@@ -339,27 +339,30 @@ class KuavoModel:
         start = time.monotonic()
         if len(targets) < 2:
             t = targets[0]
-            return self.solve(t['goals'], t['base'], t['reference'], seed, previous, velocity, dt, velocity_dt, mode)
+            return self.solve(t['goals'], t['base'], t['reference'], seed, previous, velocity, dt, velocity_dt, mode, fixed_torso=t.get('fixed_torso'))
         combined = MathematicalProgram()
         variables = []
-        for target in targets:
-            local, q = self.solve(target['goals'], target['base'], target['reference'], seed, mode=mode, build_only=True)
+        for index, target in enumerate(targets):
+            guess = seed.copy() if warm_plan is None or index >= len(warm_plan) else np.asarray(warm_plan[index]).copy()
+            if target.get('fixed_torso') is not None:
+                guess[:4] = target['fixed_torso']
+            local, q = self.solve(target['goals'], target['base'], target['reference'], guess, mode=mode, build_only=True, fixed_torso=target.get('fixed_torso'))
             combined.AddDecisionVariables(local.decision_variables())
             for binding in local.GetAllConstraints():
                 combined.AddConstraint(binding)
             for binding in local.GetAllCosts():
                 combined.AddCost(binding)
             variables.append(q)
-            combined.SetInitialGuess(q, seed)
+            combined.SetInitialGuess(q, guess)
         last_q, last_v, last_dt = previous, velocity, velocity_dt
         for index, q in enumerate(variables):
-            interval = dt if index == 0 else (targets[index]['ticks'] - targets[index - 1]['ticks']) * 1e-7
+            interval = dt if index == 0 else (targets[index]['ticks'] - targets[index - 1]['ticks']) * 1e-7 * time_scale
             if last_q is not None:
-                v = (q - last_q) / interval
+                v = [(q[j] - last_q[j]) / interval for j in range(18)]
                 for j in range(18):
                     combined.AddLinearConstraint(v[j], -self.speed[j], self.speed[j])
                 if last_v is not None:
-                    accel = (v - last_v) / ((interval + last_dt) / 2)
+                    accel = [(v[j] - last_v[j]) / ((interval + last_dt) / 2) for j in range(18)]
                     for j in range(18):
                         combined.AddLinearConstraint(accel[j], -self.accel[j], self.accel[j])
                     combined.AddQuadraticCost(sum(a * a for a in accel) * self.cfg['horizon_acceleration_weight'])
@@ -373,8 +376,19 @@ class KuavoModel:
         result = self.solver.Solve(combined, None, options)
         if not result.is_success():
             return None, {'valid': False, 'reason': 'horizon_infeasible_or_not_converged', 'solver_result': str(result.get_solution_result()), 'horizon_frames': len(targets), 'solve_s': time.monotonic() - start}
-        solution = result.GetSolution(variables[0])
-        first = targets[0]
-        check = self.validate(solution, first['base'], first['goals'], previous, velocity, dt, velocity_dt)
-        check.update(solve_s=time.monotonic() - start, horizon_frames=len(targets))
+        plan = [result.GetSolution(q) for q in variables]
+        last_q, last_v, last_dt = previous, velocity, velocity_dt
+        checks = []
+        for index, (target, q) in enumerate(zip(targets, plan)):
+            interval = dt if index == 0 else (target['ticks'] - targets[index - 1]['ticks']) * 1e-7 * time_scale
+            item = self.validate(q, target['base'], target['goals'], last_q, last_v, interval, last_dt)
+            if target.get('fixed_torso') is not None and np.max(np.abs(q[:4] - target['fixed_torso'])) > 1e-7:
+                item.update(valid=False, reason='horizon_prescribed_torso_changed')
+            checks.append(item)
+            if not item['valid']:
+                return None, dict(item, horizon_frames=len(targets), horizon_failed_index=index, solve_s=time.monotonic()-start)
+            last_v = None if last_q is None else (q-last_q)/interval
+            last_q, last_dt = q, interval
+        solution, check = plan[0], checks[0]
+        check.update(solve_s=time.monotonic() - start, horizon_frames=len(targets), horizon_plan_q=[q.tolist() for q in plan], horizon_all_frames_verified=True)
         return (solution if check['valid'] else None), check

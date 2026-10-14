@@ -205,3 +205,37 @@ def test_arm_ik_cannot_change_prescribed_body(robot):
     solution, check = robot.solve(goals, np.zeros(3), reference, q, fixed_torso=q[:4])
     assert solution is not None and check['valid']
     assert np.max(np.abs(solution[:4] - q[:4])) < 1e-7
+
+
+def test_geometry_horizon_preserves_fixed_torso_and_checks_future(robot):
+    q, goals = safe_q(robot)
+    chest, rotation = robot.shoulder_pose(q, np.zeros(3))
+    ref = {'position': chest, 'rotation': rotation, 'elbows': [np.array([.3,.3,1.]),np.array([.3,-.3,1.])]}
+    targets = [dict(goals=copy.deepcopy(goals), base=np.zeros(3), reference=ref, ticks=i*333333, fixed_torso=q[:4]) for i in range(3)]
+    solution, check = robot.solve_horizon(targets,q,previous=q,velocity=np.zeros(18),dt=1/30,velocity_dt=1/30,time_scale=2.)
+    assert solution is not None and check['horizon_all_frames_verified']
+    assert all(np.max(np.abs(np.asarray(row)[:4]-q[:4]))<1e-7 for row in check['horizon_plan_q'])
+    targets[-1]['goals'][0]['position'] = np.array([10.,10.,10.])
+    solution, check = robot.solve_horizon(targets,q)
+    assert solution is None and not check['valid']
+
+
+def test_binary_preview_opens_linkage_without_moving_tcp(robot, tmp_path):
+    import mujoco
+    from retarget.preview import render_model
+    from retarget.gripper_signal import linkage_angles
+    from retarget.model import JOINT_NAMES, TCP_NAMES
+    q, _ = safe_q(robot)
+    model = render_model(robot.metadata['source_urdf'], tmp_path, binary_gripper=True)
+    data = mujoco.MjData(model)
+    for name, angle in zip(JOINT_NAMES,q):
+        data.qpos[model.joint(name).qposadr[0]] = angle
+    mujoco.mj_forward(model,data)
+    positions = [data.xpos[model.body(n).id].copy() for n in TCP_NAMES]
+    for side in ('left','right'):
+        for name,angle in linkage_angles(side,True).items():
+            joint=model.joint(name)
+            assert joint.range[0]<=angle<=joint.range[1]
+            data.qpos[joint.qposadr[0]]=angle
+    mujoco.mj_forward(model,data)
+    assert all(np.allclose(p,data.xpos[model.body(n).id]) for p,n in zip(positions,TCP_NAMES))
