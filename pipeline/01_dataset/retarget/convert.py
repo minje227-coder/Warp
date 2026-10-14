@@ -86,7 +86,7 @@ def validate_config(cfg):
             raise ValueError('Torso hysteresis exit must be below entry')
 
 
-def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None, start_seconds=0., time_scale=1., allocation='geometry', hand_method=None):
+def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None, start_seconds=0., time_scale=1., allocation='geometry', hand_method=None, end_seconds=None):
     source, output, urdf = Path(source).resolve(), Path(output).resolve(), Path(urdf).resolve()
     if output == source or source in output.parents or output in source.parents:
         raise ValueError('Retarget output must be outside the raw episode tree')
@@ -108,7 +108,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
     for sample in streams['body']:
         elapsed = (sample['ticks'] - first_tick) * 1e-7
         slot = int(np.floor(elapsed * cfg['input']['output_hz']))
-        if elapsed >= start_seconds and slot > last_slot:
+        if elapsed >= start_seconds and (end_seconds is None or elapsed < end_seconds) and slot > last_slot:
             selected.append(sample)
             last_slot = slot
     if maximum_frames is not None:
@@ -122,7 +122,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
         'config_sha256': sha256(config_path), 'model': model.metadata, 'packages': {n: importlib.metadata.version(n) for n in ('drake', 'numpy', 'scipy', 'trimesh')},
         'implementation_sha256': {p.name: sha256(p) for p in Path(__file__).parent.glob('*.py')},
         'dataset_ready': False, 'physical_motion': False, 'robot_commands_sent': 0, 'camera_tracking_clock_verified': False,
-        'execution_time_scale': time_scale, 'note': 'Source timestamps never change; execution time scale is explicit.'}
+        'execution_time_scale': time_scale, 'source_window_s':[start_seconds,end_seconds], 'note': 'Source timestamps never change; execution time scale is explicit.'}
     dump(staging / 'manifest.json', provenance)
     alignment = None
     hand_corrections = cfg['hand_to_tcp_rotation']
@@ -365,6 +365,8 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
                             horizon = list(horizon_cache)
                             horizon[0] = dict(horizon[0],reference=ref)
                         lengths = sorted(set([len(horizon), min(3,len(horizon)), min(2,len(horizon)), 1]), reverse=True)
+                        minimum=cfg['ik'].get('minimum_horizon_frames',1)
+                        lengths=[length for length in lengths if length>=min(minimum,len(horizon))]
                         for length in lengths:
                             solution, check = model.solve_horizon(horizon[:length], initial, previous, velocity, dt, previous_dt, mode, time_scale=time_scale, warm_plan=warm_plan if np.array_equal(initial,seeds[0]) else None)
                             check['seed_attempt'] = next(i for i,x in enumerate(seeds) if x is initial)
@@ -513,13 +515,16 @@ def main():
     parser.add_argument('--torso-mode', choices=('lazy', 'follow', 'free'), default='lazy')
     parser.add_argument('--max-frames', type=int)
     parser.add_argument('--start-seconds', type=float, default=0.)
+    parser.add_argument('--end-seconds', type=float)
     parser.add_argument('--time-scale', type=float, default=1., help='Explicit execution time stretch >=1; source timestamps are unchanged')
     parser.add_argument('--allocation', choices=('geometry', 'joint'), default='geometry', help='Prescribe torso before arms; joint retains the previous baseline')
     parser.add_argument('--hand-mapping', choices=('mcp_pinch', 'legacy_pinch', 'palm_calibrated', 'index_palm', 'mcp_filtered'))
     args = parser.parse_args()
     if args.max_frames is not None and args.max_frames <= 0 or args.start_seconds < 0:
         parser.error('Frame count must be positive and start time nonnegative')
-    print(json.dumps(convert(args.episode, args.output, args.urdf, args.config, args.torso_mode, args.max_frames, args.start_seconds, args.time_scale, args.allocation, args.hand_mapping), indent=2))
+    if args.end_seconds is not None and args.end_seconds <= args.start_seconds:
+        parser.error('End time must exceed start time')
+    print(json.dumps(convert(args.episode, args.output, args.urdf, args.config, args.torso_mode, args.max_frames, args.start_seconds, args.time_scale, args.allocation, args.hand_mapping, args.end_seconds), indent=2))
 
 
 if __name__ == '__main__':

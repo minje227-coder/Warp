@@ -162,6 +162,11 @@ class KuavoModel:
     def validate(self, q, base, goals, previous=None, velocity=None, dt=None, velocity_dt=None):
         if not np.isfinite(q).all():
             return {'valid': False, 'reason': 'nonfinite_solution'}
+        if self.cfg.get('joint_braking',False) and previous is not None:
+            v=(q-previous)/dt
+            slack=[self.braking_slack(q[j],v[j],self.lower[j],self.upper[j],self.accel[j],dt) for j in range(18)]
+            if np.min(slack)<-1e-5:
+                return {'valid':False,'reason':'joint_braking_distance_failure','minimum_braking_slack_rad':float(np.min(slack))}
         self.set_q(q)
         errors = [{'position_m': float(np.linalg.norm(p - goal['position'])), 'orientation_rad': rotation_error(r, goal['rotation'])}
                   for (p, r), goal in zip(self.poses(q, base), goals)]
@@ -192,6 +197,28 @@ class KuavoModel:
             'minimum_near_distance_m': min(near, default=None),
             'speed_rad_s': None if speed is None else speed.tolist(), 'acceleration_rad_s2': None if acceleration is None else acceleration.tolist()}
 
+    @staticmethod
+    def braking_slack(position, velocity, lower, upper, acceleration, interval):
+        # Directional C1 stopping-distance inequalities. Half-step allowance
+        # conservatively accounts for the sampled finite-difference velocity.
+        positive = velocity if velocity > 0 else velocity*0
+        negative = -velocity if velocity < 0 else velocity*0
+        return np.array([upper-position-positive**2/(2*acceleration)-interval*positive/2,
+                         position-lower-negative**2/(2*acceleration)-interval*negative/2])
+
+    def add_braking(self, prog, q, previous, interval):
+        if not self.cfg.get('joint_braking',False) or previous is None:
+            return
+        numeric=isinstance(previous[0],(float,int,np.floating))
+        variables=list(q) if numeric else list(q)+list(previous)
+        def residual(x):
+            old=previous if numeric else x[18:]
+            values=[]
+            for j in range(18):
+                values.extend(self.braking_slack(x[j],(x[j]-old[j])/interval,self.lower[j],self.upper[j],self.accel[j],interval))
+            return np.array(values)
+        prog.AddConstraint(residual,np.zeros(36),np.full(36,np.inf),variables)
+
     def solve(self, goals, base, reference, seed, previous=None, velocity=None, dt=None, velocity_dt=None, mode='lazy', build_only=False, fixed_torso=None):
         start = time.monotonic()
         self.set_q(seed)
@@ -209,6 +236,7 @@ class KuavoModel:
         if np.any(lo > hi):
             return None, {'valid': False, 'reason': 'empty_continuity_bounds', 'solve_s': time.monotonic() - start}
         prog.AddBoundingBoxConstraint(lo, hi, q)
+        self.add_braking(prog,q,previous,dt)
         if fixed_torso is not None:
             if self.cfg.get('bounded_torso', False):
                 radius = self.cfg['torso_adjust_joint_rad']
@@ -435,6 +463,7 @@ class KuavoModel:
         for index, q in enumerate(variables):
             interval = dt if index == 0 else (targets[index]['ticks'] - targets[index - 1]['ticks']) * 1e-7 * time_scale
             if last_q is not None:
+                self.add_braking(combined,q,last_q,interval)
                 v = [(q[j] - last_q[j]) / interval for j in range(18)]
                 for j in range(18):
                     combined.AddLinearConstraint(v[j], -self.speed[j], self.speed[j])

@@ -274,3 +274,24 @@ def test_bounded_torso_can_adjust_and_rejects_excess(robot):
         assert all(robot.torso_adjust_valid(np.array(row),anchor,base,reference) for row in check['horizon_plan_q'])
     finally:
         robot.cfg['bounded_torso']=old
+
+
+def test_braking_rejects_moving_into_limit_but_allows_leaving():
+    from retarget.model import KuavoModel
+    from pydrake.autodiffutils import InitializeAutoDiff
+    assert np.min(KuavoModel.braking_slack(.99,1.,-1.,1.,8.,1/30))<0
+    assert np.min(KuavoModel.braking_slack(.99,-.2,-1.,1.,8.,1/30))>0
+    x=InitializeAutoDiff(np.array([.99,1.])).reshape(-1)
+    s=KuavoModel.braking_slack(x[0],x[1],-1.,1.,8.,1/30)
+    assert len(s[0].derivatives())==2
+
+
+def test_braking_horizon_compiles_and_verifies(robot):
+    q,goals=safe_q(robot);base=np.zeros(3);p,r=robot.shoulder_pose(q,base)
+    ref={'position':p,'rotation':r,'elbows':[np.array([.3,.3,1.]),np.array([.3,-.3,1.])]}
+    old=robot.cfg.get('joint_braking',False);robot.cfg['joint_braking']=True
+    try:
+        targets=[dict(goals=copy.deepcopy(goals),base=base,reference=ref,ticks=i*333333,fixed_torso=q[:4]) for i in range(3)]
+        solution,check=robot.solve_horizon(targets,q,previous=q,velocity=np.zeros(18),dt=1/30,velocity_dt=1/30)
+        assert solution is not None and check['horizon_all_frames_verified']
+    finally:robot.cfg['joint_braking']=old
