@@ -51,7 +51,7 @@ def test_closed_pinch_frame_remains_proper():
 
 
 def test_base_lazy_deadband_rate_and_yaw_wrap():
-    cfg = CONFIG['base']
+    cfg = dict(CONFIG['base'],enforce_rate_limits=True)
     base = LazyBase(cfg)
     for _ in range(100):
         assert np.allclose(base.update([.02, .01, .05], .02), 0)
@@ -100,7 +100,7 @@ def robot(tmp_path_factory):
     path = os.environ.get('KUAVO_RETARGET_TEST_URDF')
     if not path:
         pytest.skip('Set KUAVO_RETARGET_TEST_URDF for real URDF integration checks')
-    return KuavoModel(path, tmp_path_factory.mktemp('ik'), dict(CONFIG['ik'], bounded_torso=False))
+    return KuavoModel(path, tmp_path_factory.mktemp('ik'), dict(CONFIG['ik'], bounded_torso=False, enforce_dynamics=True))
 
 
 def safe_q(robot):
@@ -179,7 +179,7 @@ def test_adaptive_centroid_placement_preserves_world_goals():
 
 
 def test_placement_filter_remains_continuous_during_arm_failure():
-    f = PlacementFilter(np.zeros(3), np.eye(3), CONFIG['placement'])
+    f = PlacementFilter(np.zeros(3), np.eye(3), dict(CONFIG['placement'],enforce_rate_limits=True))
     last = f.position.copy()
     for _ in range(60):
         p, rotation = f.update(np.array([.2, 0., -.1]), np.eye(3), .033)
@@ -295,3 +295,33 @@ def test_braking_horizon_compiles_and_verifies(robot):
         solution,check=robot.solve_horizon(targets,q,previous=q,velocity=np.zeros(18),dt=1/30,velocity_dt=1/30)
         assert solution is not None and check['horizon_all_frames_verified']
     finally:robot.cfg['joint_braking']=old
+
+
+def test_geometric_mode_drops_time_bounds_but_preserves_pose_and_collision(robot):
+    q,goals=safe_q(robot);base=np.zeros(3);previous=q.copy();previous[10]+=.02
+    chest,rotation=robot.shoulder_pose(q,base)
+    ref={'position':chest,'rotation':rotation,'elbows':[np.array([.3,.3,1.]),np.array([.3,-.3,1.])]}
+    old=robot.cfg.get('enforce_dynamics',True)
+    robot.cfg['enforce_dynamics']=True
+    assert not robot.validate(q,base,goals,previous,np.zeros(18),1e-5,1e-5)['valid']
+    robot.cfg['enforce_dynamics']=False
+    try:
+        check=robot.validate(q,base,goals,previous,np.zeros(18),1e-5,1e-5)
+        assert check['valid'] and check['speed_rad_s'] is None and check['acceleration_rad_s2'] is None
+        target=dict(goals=copy.deepcopy(goals),base=base,reference=ref,ticks=100,fixed_torso=q[:4])
+        assert robot.precheck_horizon([target],q,previous,np.ones(18)*1000,1e-5,1e-5) is None
+        solution,check=robot.solve_horizon([target,dict(target,ticks=200)],q,previous,np.zeros(18),1e-5,1e-5)
+        assert solution is not None and check['horizon_all_frames_verified']
+        bad=copy.deepcopy(goals);bad[0]['position']+=np.array([1.,0.,0.])
+        assert not robot.validate(q,base,bad,previous,dt=1e-5)['valid']
+        outside=q.copy();outside[10]=robot.upper[10]+.1
+        assert not robot.validate(outside,base,goals)['valid']
+    finally:robot.cfg['enforce_dynamics']=old
+
+
+def test_geometric_base_validation_does_not_enforce_replay_rates():
+    from retarget.convert import base_valid
+    cfg=dict(CONFIG['base'],enforce_rate_limits=False)
+    assert base_valid(np.array([1.,0.,0.]),np.zeros(3),np.zeros(3),1e-5,1e-5,cfg)
+    cfg['enforce_rate_limits']=True
+    assert not base_valid(np.array([1.,0.,0.]),np.zeros(3),np.zeros(3),1e-5,1e-5,cfg)

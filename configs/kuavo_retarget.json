@@ -65,7 +65,8 @@
     "yaw_speed_rad_s": 1.2,
     "accel_m_s2": 1.0,
     "yaw_accel_rad_s2": 2.0,
-    "max_gap_s": 0.25
+    "max_gap_s": 0.25,
+    "enforce_rate_limits": false
   },
   "torso_reference": {
     "position_enter_m": 0.01,
@@ -80,7 +81,8 @@
     "speed_m_s": 0.2,
     "accel_m_s2": 0.6,
     "angular_speed_rad_s": 0.6,
-    "angular_accel_rad_s2": 1.2
+    "angular_accel_rad_s2": 1.2,
+    "enforce_rate_limits": false
   },
   "ik": {
     "velocity_scale": 1.0,
@@ -133,7 +135,11 @@
     "torso_adjust_joint_rad": 0.05,
     "torso_adjust_position_m": 0.02,
     "torso_adjust_orientation_rad": 0.035,
-    "torso_adjust_weight": 100.0
+    "torso_adjust_weight": 100.0,
+    "enforce_dynamics": false,
+    "joint_braking": false,
+    "path_continuity_weight": 2.0,
+    "path_curvature_weight": 1.0
   },
   "limit_provenance": {
     "velocity": "User requested full URDF/S63 task.info per-joint speed upper bounds; scale=1.0",

@@ -81,14 +81,16 @@ class LazyBase:
             error[:2] *= max(0., distance - self.cfg['xy_deadband_m']) / max(distance, 1e-12)
             error[2] = np.sign(wrap(error[2])) * max(0., abs(wrap(error[2])) - self.cfg['yaw_deadband_rad'])
             accel = omega**2 * error - 2 * self.cfg['damping_ratio'] * omega * self.velocity
-            limits = np.array([self.cfg['accel_m_s2']] * 2 + [self.cfg['yaw_accel_rad_s2']])
-            accel = np.clip(accel, -limits, limits)
-            n = np.linalg.norm(accel[:2])
-            accel[:2] *= min(1., self.cfg['accel_m_s2'] / max(n, 1e-12))
+            if self.cfg.get('enforce_rate_limits',True):
+                limits = np.array([self.cfg['accel_m_s2']] * 2 + [self.cfg['yaw_accel_rad_s2']])
+                accel = np.clip(accel, -limits, limits)
+                n = np.linalg.norm(accel[:2])
+                accel[:2] *= min(1., self.cfg['accel_m_s2'] / max(n, 1e-12))
             self.velocity += h * accel
-            speed = np.linalg.norm(self.velocity[:2])
-            self.velocity[:2] *= min(1., self.cfg['speed_m_s'] / max(speed, 1e-12))
-            self.velocity[2] = np.clip(self.velocity[2], -self.cfg['yaw_speed_rad_s'], self.cfg['yaw_speed_rad_s'])
+            if self.cfg.get('enforce_rate_limits',True):
+                speed = np.linalg.norm(self.velocity[:2])
+                self.velocity[:2] *= min(1., self.cfg['speed_m_s'] / max(speed, 1e-12))
+                self.velocity[2] = np.clip(self.velocity[2], -self.cfg['yaw_speed_rad_s'], self.cfg['yaw_speed_rad_s'])
             self.pose += h * self.velocity
             self.pose[2] = wrap(self.pose[2])
         return self.pose.copy()
@@ -170,16 +172,20 @@ class PlacementFilter:
             distance = np.linalg.norm(error)
             error *= max(0., distance - self.cfg['position_deadband_m']) / max(distance, 1e-12)
             a = omega**2 * error - 2 * omega * self.velocity
-            a *= min(1., self.cfg['accel_m_s2'] / max(np.linalg.norm(a), 1e-12))
+            if self.cfg.get('enforce_rate_limits',True):
+                a *= min(1., self.cfg['accel_m_s2'] / max(np.linalg.norm(a), 1e-12))
             self.velocity += h * a
-            self.velocity *= min(1., self.cfg['speed_m_s'] / max(np.linalg.norm(self.velocity), 1e-12))
+            if self.cfg.get('enforce_rate_limits',True):
+                self.velocity *= min(1., self.cfg['speed_m_s'] / max(np.linalg.norm(self.velocity), 1e-12))
             self.position += h * self.velocity
             error_r = Rotation.from_matrix(self.rotation.T @ rotation).as_rotvec()
             angle = np.linalg.norm(error_r)
             error_r *= max(0., angle - self.cfg['angle_deadband_rad']) / max(angle, 1e-12)
             ar = omega**2 * error_r - 2 * omega * self.angular_velocity
-            ar *= min(1., self.cfg['angular_accel_rad_s2'] / max(np.linalg.norm(ar), 1e-12))
+            if self.cfg.get('enforce_rate_limits',True):
+                ar *= min(1., self.cfg['angular_accel_rad_s2'] / max(np.linalg.norm(ar), 1e-12))
             self.angular_velocity += h * ar
-            self.angular_velocity *= min(1., self.cfg['angular_speed_rad_s'] / max(np.linalg.norm(self.angular_velocity), 1e-12))
+            if self.cfg.get('enforce_rate_limits',True):
+                self.angular_velocity *= min(1., self.cfg['angular_speed_rad_s'] / max(np.linalg.norm(self.angular_velocity), 1e-12))
             self.rotation = self.rotation @ Rotation.from_rotvec(h * self.angular_velocity).as_matrix()
         return self.position.copy(), self.rotation.copy()

@@ -231,7 +231,10 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False, bi
         if signals is not None:
             states = ' | '.join(side[0].upper()+': '+str(grip.get('state','unknown')) for side,grip in signals[row_index]['hands'].items())
             draw.text((1300,728), states+' (preview)',font=small,fill='#fbbf24')
-        draw.text((20, 766), 'PREVIEW ONLY: camera/tracking alignment estimated; hand axes uncalibrated; no robot commands; not training-ready', font=small, fill='#fbbf24')
+        note = 'PREVIEW ONLY: camera/tracking alignment estimated; hand axes uncalibrated; no robot commands; not training-ready'
+        if not manifest.get('velocity_acceleration_enforced',True):
+            note = 'GEOMETRIC ONLY: replay speed/acceleration pending | camera/tracking alignment estimated | no robot commands'
+        draw.text((20, 766), note, font=small, fill='#fbbf24')
         video_frame = av.VideoFrame.from_image(canvas)
         for packet in stream.encode(video_frame):
             writer.mux(packet)
@@ -249,6 +252,7 @@ def preview(trajectory, output, maximum_seconds=None, show_diagnostics=False, bi
     result = {'video': str(output), 'video_sha256': sha256(output), 'fps': fps, 'duration_s': duration, 'execution_time_scale': time_scale,
         'camera_to_utc_offset_ns_preview_estimate': offset, 'clock_offset_range_ns': max(offsets) - min(offsets),
         'camera_tracking_clock_verified': False, 'frame_counts': counts, 'physical_motion': False,
+        'velocity_acceleration_enforced':manifest.get('velocity_acceleration_enforced',True), 'replay_retiming_required':manifest.get('replay_retiming_required',False),
         'binary_gripper_preview':binary_gripper,'gripper_calibration':grip_calibration,'opened_gripper_collision_verified':False,
         'note': 'CFR is a visualization only. Invalid poses/held panels are labeled and never inserted into the trajectory.'}
     output.with_suffix('.json').write_text(json.dumps(result, indent=2) + '\n')

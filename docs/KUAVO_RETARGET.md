@@ -274,3 +274,13 @@ bounded torso with the original MCP axes achieved 81/90. A new hand frame is not
 adopted merely because it seems anatomically stable. The default uses the bounded
 MCP orientation filter; the raw MCP baseline is selectable with --hand-mapping
 mcp_pinch. Gripper thresholds and pinch-center position remain unchanged.
+
+## Geometry-only retargeting default (2026-10-14)
+
+The default now sets ik.enforce_dynamics=false, ik.joint_braking=false and base/placement.enforce_rate_limits=false. Arm/body velocity, acceleration, stopping-distance bounds and temporal derivative costs are disabled in solves, prechecks and final validation. Base candidates are no longer rejected for replay rates. Lazy filters retain frequency/deadband smoothing but omit explicit mechanical rate caps. Source tracking/outlier validity checks remain separate.
+
+Horizon costs use joint displacement and geometric curvature, without dividing by source time. Joint position limits, full TCP poses, self-collision including linear interframe collision samples, and bounded torso anchors remain enforced. Per-frame correctness is not an interpolated Cartesian-path or physical replay guarantee.
+
+Manifest/quality/preview record velocity_acceleration_enforced=false and replay_retiming_required=true. Replay must construct and validate its own timed/interpolated path. Original source timestamps are retained. Configured speed/acceleration values remain available for an explicit dynamics-enabled experiment or later replay validation. Configs without the new flags keep legacy enforcement; kuavo_continuity.json retains its prior behavior.
+
+Measured fresh 25–46 s run: 595/630 verified geometric frames, one valid segment spanning 25.0030–44.8064 s, wall time 106.143 s. Remaining failures: 32 IK, one orientation-source validity and two tracking validity failures. Independent frame pose, joint limits, interframe/self-collision and torso-anchor checks passed all 595 accepted frames. No replay-rate or physical-robot verification is implied.

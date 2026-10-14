@@ -162,7 +162,7 @@ class KuavoModel:
     def validate(self, q, base, goals, previous=None, velocity=None, dt=None, velocity_dt=None):
         if not np.isfinite(q).all():
             return {'valid': False, 'reason': 'nonfinite_solution'}
-        if self.cfg.get('joint_braking',False) and previous is not None:
+        if self.cfg.get('enforce_dynamics',True) and self.cfg.get('joint_braking',False) and previous is not None:
             v=(q-previous)/dt
             slack=[self.braking_slack(q[j],v[j],self.lower[j],self.upper[j],self.accel[j],dt) for j in range(18)]
             if np.min(slack)<-1e-5:
@@ -176,11 +176,12 @@ class KuavoModel:
         valid = bool(valid and all(e['position_m'] <= self.cfg['tcp_position_tolerance_m'] + 1e-5 and e['orientation_rad'] <= self.cfg['tcp_orientation_tolerance_rad'] + 1e-5 for e in errors))
         speed, acceleration = None, None
         if previous is not None:
-            speed = (q - previous) / dt
-            valid = bool(valid and np.all(np.abs(speed) <= self.speed + 1e-5))
-            if velocity is not None:
-                acceleration = (speed - velocity) / ((dt + velocity_dt) / 2)
-                valid = bool(valid and np.all(np.abs(acceleration) <= self.accel + 1e-4))
+            if self.cfg.get('enforce_dynamics',True):
+                speed = (q - previous) / dt
+                valid = bool(valid and np.all(np.abs(speed) <= self.speed + 1e-5))
+                if velocity is not None:
+                    acceleration = (speed - velocity) / ((dt + velocity_dt) / 2)
+                    valid = bool(valid and np.all(np.abs(acceleration) <= self.accel + 1e-4))
             # Check the linear joint interpolation between accepted samples too.
             # As in the existing GraspSystem, use <=0.02rad per check interval.
             subdivisions = max(1, int(np.ceil(np.max(np.abs(q - previous)) / self.cfg['collision_validation_step_rad'])))
@@ -207,7 +208,7 @@ class KuavoModel:
                          position-lower-negative**2/(2*acceleration)-interval*negative/2])
 
     def add_braking(self, prog, q, previous, interval):
-        if not self.cfg.get('joint_braking',False) or previous is None:
+        if not self.cfg.get('enforce_dynamics',True) or not self.cfg.get('joint_braking',False) or previous is None:
             return
         numeric=isinstance(previous[0],(float,int,np.floating))
         variables=list(q) if numeric else list(q)+list(previous)
@@ -226,10 +227,10 @@ class KuavoModel:
         prog, raw = ik.prog(), ik.q()
         q = raw[self.indices]
         lo, hi = self.lower.copy(), self.upper.copy()
-        if previous is not None:
+        if self.cfg.get("enforce_dynamics",True) and previous is not None:
             lo = np.maximum(lo, previous - self.speed * dt)
             hi = np.minimum(hi, previous + self.speed * dt)
-            if velocity is not None:
+            if self.cfg.get("enforce_dynamics",True) and velocity is not None:
                 step = (dt + velocity_dt) / 2
                 lo = np.maximum(lo, previous + (velocity - self.accel * step) * dt)
                 hi = np.minimum(hi, previous + (velocity + self.accel * step) * dt)
@@ -287,7 +288,7 @@ class KuavoModel:
         else:
             weights[:4] = 0.
         prog.AddQuadraticErrorCost(np.diag(weights), seed, q)
-        if velocity is not None:
+        if self.cfg.get("enforce_dynamics",True) and velocity is not None:
             target = previous + velocity * dt
             prog.AddQuadraticErrorCost(np.eye(18) * self.cfg['acceleration_weight'], target, q)
         internal = np.empty(18)
@@ -335,7 +336,7 @@ class KuavoModel:
         ik = InverseKinematics(self.plant, self.context, with_joint_limits=True)
         q, prog = ik.q()[self.indices], ik.prog()
         lo, hi = self.lower[:4].copy(), self.upper[:4].copy()
-        if previous is not None:
+        if self.cfg.get("enforce_dynamics",True) and previous is not None:
             lo = np.maximum(lo, previous - self.speed[:4] * dt)
             hi = np.minimum(hi, previous + self.speed[:4] * dt)
             # Retain enough distance to brake before mechanical position limits.
@@ -402,7 +403,7 @@ class KuavoModel:
         Inflate the URDF chain-length reach bound by *both* allowed TCP position
         and orientation error. Passing this test never certifies IK feasibility.
         """
-        if previous is not None:
+        if self.cfg.get("enforce_dynamics",True) and previous is not None:
             lo=np.maximum(self.lower, previous-self.speed*dt)
             hi=np.minimum(self.upper, previous+self.speed*dt)
             if velocity is not None:
@@ -462,7 +463,13 @@ class KuavoModel:
         last_q, last_v, last_dt = previous, velocity, velocity_dt
         for index, q in enumerate(variables):
             interval = dt if index == 0 else (targets[index]['ticks'] - targets[index - 1]['ticks']) * 1e-7 * time_scale
-            if last_q is not None:
+            if last_q is not None and not self.cfg.get('enforce_dynamics',True):
+                displacement=[q[j]-last_q[j] for j in range(18)]
+                combined.AddQuadraticCost(sum(d*d for d in displacement)*self.cfg.get('path_continuity_weight',2.))
+                if index>=2:
+                    curvature=[q[j]-2*variables[index-1][j]+variables[index-2][j] for j in range(18)]
+                    combined.AddQuadraticCost(sum(d*d for d in curvature)*self.cfg.get('path_curvature_weight',1.))
+            if last_q is not None and self.cfg.get('enforce_dynamics',True):
                 self.add_braking(combined,q,last_q,interval)
                 v = [(q[j] - last_q[j]) / interval for j in range(18)]
                 for j in range(18):

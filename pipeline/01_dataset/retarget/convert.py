@@ -27,7 +27,7 @@ def dump(path, value):
 
 
 def base_valid(candidate, last, velocity, dt, previous_dt, config):
-    if last is None:
+    if last is None or not config.get("enforce_rate_limits",True):
         return True
     delta = candidate - last
     delta[2] = wrap(delta[2])
@@ -43,6 +43,8 @@ def base_valid(candidate, last, velocity, dt, previous_dt, config):
 
 def retry_base(preferred, desired, previous, velocity, dt, previous_dt, config):
     """A reachability retry, always bounded relative to the last accepted pose."""
+    if not config.get('enforce_rate_limits',True):
+        return np.asarray(preferred).copy()
     if previous is None:
         return np.asarray(desired).copy()
     error = desired - previous
@@ -122,7 +124,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
         'config_sha256': sha256(config_path), 'model': model.metadata, 'packages': {n: importlib.metadata.version(n) for n in ('drake', 'numpy', 'scipy', 'trimesh')},
         'implementation_sha256': {p.name: sha256(p) for p in Path(__file__).parent.glob('*.py')},
         'dataset_ready': False, 'physical_motion': False, 'robot_commands_sent': 0, 'camera_tracking_clock_verified': False,
-        'execution_time_scale': time_scale, 'source_window_s':[start_seconds,end_seconds], 'note': 'Source timestamps never change; execution time scale is explicit.'}
+        'velocity_acceleration_enforced':cfg['ik'].get('enforce_dynamics',True), 'replay_retiming_required':not cfg['ik'].get('enforce_dynamics',True), 'execution_time_scale': time_scale, 'source_window_s':[start_seconds,end_seconds], 'note': 'Source timestamps never change; execution time scale is explicit.'}
     dump(staging / 'manifest.json', provenance)
     alignment = None
     hand_corrections = cfg['hand_to_tcp_rotation']
@@ -487,7 +489,7 @@ def convert(source, output, urdf, config_path, mode='lazy', maximum_frames=None,
         'diagnostic_geometry_only_frames': sum(r.get('diagnostic_only', False) for r in rows),
         'native_body_basis_verified': False, 'hand_tcp_axis_calibration_verified': False,
         'gripper_calibration_verified': False, 'environment_collision_verified': False, 'dynamics_verified': False,
-        'head_fixed': True, 'physical_motion': False, 'robot_commands_sent': 0, 'allocation': allocation}
+        'velocity_acceleration_enforced':cfg['ik'].get('enforce_dynamics',True), 'replay_retiming_required':not cfg['ik'].get('enforce_dynamics',True), 'head_fixed': True, 'physical_motion': False, 'robot_commands_sent': 0, 'allocation': allocation}
     body_rows = [r for r in rows if r.get('torso_q') is not None]
     body_deltas = [np.asarray(b.get('torso_anchor_q',b['torso_q']))-a.get('torso_anchor_q',a['torso_q']) for a,b in zip(body_rows,body_rows[1:])]
     summary.update(hand_mapping=hand_method,
