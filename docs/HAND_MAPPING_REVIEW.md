@@ -133,3 +133,23 @@ SHA-256, 보정/holdout 오차, 표시 프레임 수와 개폐 고정 상태를 
 근거: [Android CameraCharacteristics](https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics#LENS_POSE_ROTATION),
 [CameraMetadata](https://developer.android.com/reference/android/hardware/camera2/CameraMetadata#LENS_POSE_REFERENCE_GYROSCOPE),
 [MediaPipe Hand Landmarker](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker/python).
+
+### 선택한 이진 개폐 미리보기
+
+`--binary-gripper`는 엄지/검지 간격이 작을수록 커지는 닫힘값을 사용한다.
+닫힘값≤0.35면 완전 열림, ≥0.65면 완전 닫힘이며 그 사이에서는 이전
+상태를 유지한다. 추적 무효/긴 시간 단절 뒤에는 상태를 초기화하고,
+처음부터 중간 영역이면 상태가 정해질 때까지 표시하지 않는다.
+80ms 시간상수로 간격을 필터링하고 영상의 양손별 P20/P80을 임시
+닫힘/열림 기준으로 사용한다. 물체 접촉/빈손/하드웨어 보정은 미검증이다.
+
+`gripper-signals.json`은 원본 프레임, 닫힘값, 상태, 이진 열림 목표와
+표시용 관절값을 보존한다. 몸/팔 IK는 변경하지 않으며, 열린 그리퍼의
+충돌/스윕 검증이나 실제 액추에이터 명령이 아니다.
+
+링크 각도는 lab6의 kuavo-ros-opensource
+`MobileManipulatorDummyVisualization.cpp:getClawLinkageAngles`의
+200062 표시 연동표를 참고한다. S63 custom URDF에는 bar-2와 finger
+관절이 fixed이므로 이들은 회전시키지 않고, 존재하는 revolute인
+bar-1/bar-3/bar-4만 좌우 대칭으로 적용한다. 관절 한계를 확인한다.
+따라서 모델 표현은 실제 폐루프 기구의 정밀 보정을 대체하지 않는다.

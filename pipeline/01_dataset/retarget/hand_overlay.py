@@ -19,6 +19,10 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation, Slerp
 import trimesh
+try:
+    from .gripper_signal import binary_signals, linkage_angles
+except ImportError:
+    from gripper_signal import binary_signals, linkage_angles
 
 C = np.array([[0., 0., 1.], [-1., 0., 0.], [0., 1., 0.]])
 D = np.diag([1., 1., -1.])  # Android gyro right-handed -> Unity head axes.
@@ -156,6 +160,23 @@ def register(source, rows, camera, model, output):
 def gripper_meshes(urdf, mesh_root, side):
     root = ET.parse(urdf).getroot();s = side[0]
     tcp = f'zarm_{s}7_endeffector_center';tf = {f'zarm_{s}7_link': np.eye(4)}
+    def transforms(opened):
+        angles=linkage_angles(side,opened);result={f'zarm_{s}7_link':np.eye(4)}
+        for _ in range(15):
+            for j in root.findall('joint'):
+                parent,child=j.find('parent').get('link'),j.find('child').get('link')
+                if parent not in result or child in result:continue
+                origin=j.find('origin');t=np.eye(4)
+                if origin is not None:
+                    t[:3,3]=np.fromstring(origin.get('xyz','0 0 0'),sep=' ')
+                    t[:3,:3]=Rotation.from_euler('xyz',np.fromstring(origin.get('rpy','0 0 0'),sep=' ')).as_matrix()
+                if j.get('type')=='revolute' and j.get('name') in angles:
+                    a=angles[j.get('name')];limits=j.find('limit')
+                    if not float(limits.get('lower'))<=a<=float(limits.get('upper')):raise ValueError('Gripper joint limit')
+                    axis=np.fromstring(j.find('axis').get('xyz'),sep=' ');t[:3,:3]=t[:3,:3]@Rotation.from_rotvec(axis*a).as_matrix()
+                result[child]=result[parent]@t
+        return result
+    tf_open=transforms(True)
     for _ in range(15):
         for j in root.findall('joint'):
             parent, child = j.find('parent').get('link'), j.find('child').get('link')
@@ -183,8 +204,11 @@ def gripper_meshes(urdf, mesh_root, side):
         if origin is not None:
             v = np.eye(4);v[:3,3] = np.fromstring(origin.get('xyz','0 0 0'),sep=' ')
             v[:3,:3] = Rotation.from_euler('xyz',np.fromstring(origin.get('rpy','0 0 0'),sep=' ')).as_matrix();t=t@v
+        opening=np.linalg.inv(tf_open[tcp])@tf_open[name]
+        if origin is not None:opening=opening@v
+        open_mesh=mesh.copy();open_mesh.apply_transform(opening)
         mesh.apply_transform(t)
-        meshes.append({'name': name, 'vertices': mesh.vertices.copy(), 'faces': mesh.faces.copy()})
+        meshes.append({'name': name, 'vertices': mesh.vertices.copy(), 'open_vertices':open_mesh.vertices.copy(), 'faces': mesh.faces.copy()})
     if not meshes:
         raise ValueError('No gripper meshes')
     return meshes, hashes
@@ -197,7 +221,7 @@ def render(rgb, hands, camera_rotation, camera_position, registration, camera, m
             continue
         goal = h['candidates']['pinch_palm'];rg,pg=np.array(goal['rotation']),np.array(goal['position'])
         for mesh in meshes[side]:
-            world = mesh['vertices'] @ rg.T + pg
+            world = mesh['open_vertices' if h.get('gripper_open') else 'vertices'] @ rg.T + pg
             optical = (world-camera_position) @ camera_rotation
             optical = optical @ np.array(registration['rotation']).T + registration['translation_m']
             faces=mesh['faces'];valid=np.min(optical[faces][:,:,2],axis=1)>.04
@@ -224,12 +248,20 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source');parser.add_argument('output');parser.add_argument('--mesh-root',required=True)
     parser.add_argument('--hand-model',required=True);parser.add_argument('--max-seconds',type=float)
+    parser.add_argument('--binary-gripper',action='store_true')
     args=parser.parse_args();source,output=Path(args.source),Path(args.output);output.mkdir(parents=True,exist_ok=True)
     video=output/'gripper-on-hands.mp4'
     if video.exists():raise FileExistsError(video)
     started=time.monotonic();cal=json.loads((source/'calibration.json').read_text());manifest=json.loads((source/'manifest.json').read_text())
     if digest(source/'camera.mp4')!=manifest['files']['camera.mp4']['sha256']:raise ValueError('Source RGB checksum mismatch')
     rows=[json.loads(l) for l in (source/'hand_targets.jsonl').open()];heads=[json.loads(l) for l in (source/'head.jsonl').open()]
+    gripper_calibration=None
+    if args.binary_gripper:
+        signals,gripper_calibration=binary_signals(rows);save(output/'gripper-signals.json',signals)
+        for row,signal in zip(rows,signals):
+            for side,h in row['hands'].items():
+                g=signal['hands'][side]
+                h['valid']=h['valid'] and g['valid'];h['gripper_open']=g.get('open_target')==1
     camera=Camera(cal,heads);registration=register(source,rows,camera,Path(args.hand_model),output)
     print(json.dumps({'registration':registration},default=serial),flush=True)
     meshes,hashes={},{}
@@ -263,7 +295,8 @@ def main():
         'head_sha256':digest(source/'head.jsonl'),'hand_targets_sha256':digest(source/'hand_targets.jsonl'),
         'urdf_sha256':digest(source/'kuavo_s63_twofinger.urdf'),'meshes':hashes,'registration':registration,
         'hand_target':'recorded Quest MCP frame / thumb-index midpoint; no per-frame RGB target snapping',
-        'gripper_aperture':'all original URDF gripper joints held at neutral 0; no actuator calibration',
+        'gripper_aperture':'binary source-derived preview; revolute-only KUAVO linkage table; fixed URDF joints remain fixed' if args.binary_gripper else 'neutral 0',
+        'gripper_calibration':gripper_calibration,'opened_gripper_collision_verified':False,
         'render':'actual gripper mesh subset, decimated, 60% opacity, left cyan/right orange; no arms or skeleton',
         'counts':counters,'wall_s':time.monotonic()-started,'physical_motion':False,'dataset_ready':False,
         'projection_verified':False,'clock_verified':False,'script_sha256':digest(__file__),'video_sha256':digest(video)}
