@@ -27,3 +27,9 @@ Measured geometry-plus-retiming experiment: 10.77 s, 582 static poses. Initial p
 ## Next engineering direction
 
 Generate multiple accurately verified IK candidates at each waypoint, select a consistent elbow/wrist branch across an entire valid tracking segment, and refine failing Cartesian intervals before time parameterization. Preserve margin for interpolation, then independently validate the actual timed path. GPU batch candidate generation plus short local refinement can reduce repeated 90-variable CPU solves, but requires model/TCP/collision equivalence checks before adoption. Do not hide tracking gaps or relax pose tolerances to manufacture continuity.
+
+## Final measured comparison
+
+The inherited 25–46 s crop has 573/630 valid frames in 18 segments. The freshly initialized 25–46 s braking/minimum-horizon run with execution_time_scale=2 has 592/630 valid frames in 2 segments; longest valid source interval 25.8369–44.7726 s. IK wall time 847.585 s; video rendering 67.91 s. Independent FK, joint limits, self-collision, finite-difference velocity/acceleration, directional stopping-distance and torso-anchor checks passed all 592 accepted frames. This is a half-speed, approximately 42 s execution preview, not an original-speed solution or hardware verification. Initial state differs from the inherited crop, so this is a combined strategy experiment, not an isolated braking ablation. No certified_empty_continuity_bounds occurred. 35 IK and 3 input failures remain.
+
+TOPPRA extra environment version is 0.6.10. The margin experiment's independent denser check covered 10,832 samples and admitted 450 frames; its 10.77 s timing excludes this independent check. The timing is not a full-window feasible-trajectory runtime. Temporary scripts and their reports are retained for review. Neither experiment is promoted to the default configuration.
