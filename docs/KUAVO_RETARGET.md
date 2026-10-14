@@ -201,3 +201,12 @@ splits segments, and no states are connected across those gaps.
 revolute linkage joints using episode P20/P80 closing-score calibration and the
 0.35/0.65 hysteresis thresholds. This is display-only. The arm collision model
 still freezes grippers at neutral; opened and swept gripper collision is unverified.
+
+Lazy torso tuning (2026-10-14): suppress small adaptive-placement changes with
+3cm position and 3-degree orientation deadbands. The placement filter uses 1Hz,
+0.2m/s and 0.6m/s² translation bounds, and 0.6rad/s and 1.2rad/s² rotation bounds.
+The torso projector's previous-pose regularizer is 5.0 instead of 0.1. These tune
+the prescribed task-space torso target, not the physical URDF joint velocity caps.
+Arm TCP tolerances, joint margins, acceleration limits, collision margins and the
+adaptive arm lookahead remain unchanged. Outputs are regenerated from the original
+tracking samples; no post-IK smoothing or target-position edits are applied.

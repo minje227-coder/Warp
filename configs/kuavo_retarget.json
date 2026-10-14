@@ -1,31 +1,133 @@
 {
   "schema_version": 1,
   "hand_mapping": "mcp_pinch",
-  "world": {"initial_base_pose": [0.0, 0.0, 0.0], "height_offset_m": 0.0},
-  "input": {"maximum_bracket_s": 0.05, "output_hz": 30.0, "wrist_agreement_m": 0.03, "maximum_orientation_speed_rad_s": 20.0},
+  "world": {
+    "initial_base_pose": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "height_offset_m": 0.0
+  },
+  "input": {
+    "maximum_bracket_s": 0.05,
+    "output_hz": 30.0,
+    "wrist_agreement_m": 0.03,
+    "maximum_orientation_speed_rad_s": 20.0
+  },
   "hand_to_tcp_rotation": {
-    "left": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
-    "right": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]]
+    "left": [
+      [
+        -1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ],
+    "right": [
+      [
+        -1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ]
   },
-  "gripper": {"closed_pinch_m": 0.015, "open_pinch_m": 0.10, "calibration_verified": false},
+  "gripper": {
+    "closed_pinch_m": 0.015,
+    "open_pinch_m": 0.1,
+    "calibration_verified": false
+  },
   "base": {
-    "xy_deadband_m": 0.05, "yaw_deadband_rad": 0.1, "frequency_hz": 1.5, "damping_ratio": 1.0,
-    "speed_m_s": 1.2, "yaw_speed_rad_s": 1.2, "accel_m_s2": 1.0, "yaw_accel_rad_s2": 2.0, "max_gap_s": 0.25
+    "xy_deadband_m": 0.05,
+    "yaw_deadband_rad": 0.1,
+    "frequency_hz": 1.5,
+    "damping_ratio": 1.0,
+    "speed_m_s": 1.2,
+    "yaw_speed_rad_s": 1.2,
+    "accel_m_s2": 1.0,
+    "yaw_accel_rad_s2": 2.0,
+    "max_gap_s": 0.25
   },
-  "torso_reference": {"position_enter_m": 0.01, "position_exit_m": 0.005, "angle_enter_rad": 0.035, "angle_exit_rad": 0.0175},
-  "placement": {"frequency_hz": 1.5, "position_deadband_m": 0.005, "angle_deadband_rad": 0.0175,
-    "speed_m_s": 0.3, "accel_m_s2": 1.0, "angular_speed_rad_s": 1.0, "angular_accel_rad_s2": 2.0},
+  "torso_reference": {
+    "position_enter_m": 0.01,
+    "position_exit_m": 0.005,
+    "angle_enter_rad": 0.035,
+    "angle_exit_rad": 0.0175
+  },
+  "placement": {
+    "frequency_hz": 1.0,
+    "position_deadband_m": 0.03,
+    "angle_deadband_rad": 0.05235987756,
+    "speed_m_s": 0.2,
+    "accel_m_s2": 0.6,
+    "angular_speed_rad_s": 0.6,
+    "angular_accel_rad_s2": 1.2
+  },
   "ik": {
-    "velocity_scale": 1.0, "torso_accel_rad_s2": 2.0, "arm_accel_rad_s2": 8.0,
-    "joint_margin_rad": 0.02, "collision_margin_m": 0.01, "collision_validation_step_rad": 0.02,
-    "tcp_position_tolerance_m": 0.005, "tcp_orientation_tolerance_rad": 0.035,
-    "chest_position_weight": 100.0, "chest_orientation_weight": 10.0, "elbow_weight": 2.0,
-    "torso_motion_weight": 50.0, "torso_intent_motion_weight": 3.0, "torso_follow_motion_weight": 0.05,
-    "arm_continuity_weight": 0.02, "acceleration_weight": 0.01, "max_iterations": 180,
-    "horizon_frames": 5, "arm_seed_candidates": 3, "horizon_acceleration_weight": 0.002, "horizon_velocity_weight": 0.002,
-    "placement_position_weight": 1000.0, "placement_orientation_weight": 100.0, "placement_continuity_weight": 0.1,
+    "velocity_scale": 1.0,
+    "torso_accel_rad_s2": 2.0,
+    "arm_accel_rad_s2": 8.0,
+    "joint_margin_rad": 0.02,
+    "collision_margin_m": 0.01,
+    "collision_validation_step_rad": 0.02,
+    "tcp_position_tolerance_m": 0.005,
+    "tcp_orientation_tolerance_rad": 0.035,
+    "chest_position_weight": 100.0,
+    "chest_orientation_weight": 10.0,
+    "elbow_weight": 2.0,
+    "torso_motion_weight": 50.0,
+    "torso_intent_motion_weight": 3.0,
+    "torso_follow_motion_weight": 0.05,
+    "arm_continuity_weight": 0.02,
+    "acceleration_weight": 0.01,
+    "max_iterations": 180,
+    "horizon_frames": 5,
+    "arm_seed_candidates": 3,
+    "horizon_acceleration_weight": 0.002,
+    "horizon_velocity_weight": 0.002,
+    "placement_position_weight": 1000.0,
+    "placement_orientation_weight": 100.0,
+    "placement_continuity_weight": 5.0,
     "torso_orientation_tolerance_rad": 0.035,
-    "initial_q": [0.6, -1.1, 0.5, 0.0, -0.35, 0.35, 0.0, -1.0, 0.0, 0.0, 0.0, -0.35, -0.35, 0.0, -1.0, 0.0, 0.0, 0.0]
+    "initial_q": [
+      0.6,
+      -1.1,
+      0.5,
+      0.0,
+      -0.35,
+      0.35,
+      0.0,
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      -0.35,
+      -0.35,
+      0.0,
+      -1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
   },
   "limit_provenance": {
     "velocity": "User requested full URDF/S63 task.info per-joint speed upper bounds; scale=1.0",
