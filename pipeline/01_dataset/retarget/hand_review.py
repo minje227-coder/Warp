@@ -120,7 +120,7 @@ def panel_view(rows, side):
     return {'scale_px_per_m': scale, 'center': ((lo + hi) / 2).tolist()}
 
 
-def hand_panel(image, origin, hand, side, font, small, view):
+def hand_panel(image, origin, hand, side, font, small, view, frame_method):
     draw = ImageDraw.Draw(image)
     ox, oy = origin
     draw.rounded_rectangle((ox + 8, oy + 48, ox + 632, oy + 735), radius=16, fill='#172337')
@@ -169,13 +169,14 @@ def hand_panel(image, origin, hand, side, font, small, view):
     difference = np.linalg.norm(np.array(candidates['pinch_palm']['position']) - candidates['palm_fixed']['position']) * 1000
     chord = candidates['closing_axis_tip_chord_deg']
     chord_label = 'undefined near closure' if chord is None else f'{chord:.1f}deg'
-    for y, text, color in ((550, 'ORANGE: fingertip midpoint + palm orientation', ORANGE),
-        (576, 'CYAN: fixed virtual TCP + palm orientation', CYAN),
+    frame_label = 'thumb/index MCP' if frame_method == 'mcp_pinch' else 'palm orientation'
+    for y, text, color in ((550, 'ORANGE: fingertip midpoint + ' + frame_label, ORANGE),
+        (576, 'CYAN: fixed virtual TCP + ' + frame_label, CYAN),
         (602, 'PINK: old fingertip-derived approach direction', PINK),
         (628, 'YELLOW: thumb-to-index fingertip chord', '#fde047'),
         (660, f'aperture {candidates["pinch_width_m"] * 1000:.1f}mm | TCP gap {difference:.1f}mm', 'white'),
         (688, f'old / stable rotation difference {old_angle:.1f}deg', 'white'),
-        (714, f'palm closing axis / fingertip chord: {chord_label}', 'white')):
+        (714, f'closing axis / fingertip chord: {chord_label}', 'white')):
         draw.text((ox + 20, oy + y), text, font=small, fill=color)
     # Scale: 50mm, fixed view throughout the recording.
     draw.line((ox + 30, oy + 510, ox + 30 + .05 * view['scale_px_per_m'], oy + 510), fill='white', width=3)
@@ -244,6 +245,7 @@ def review(source, output, config, reference_start=5., reference_end=7., frame_m
     # Preserve exposure-derived variable cadence; no frame padding/repetition.
     from fractions import Fraction
     stream.time_base = Fraction(1, 1000000)
+    stream.codec_context.time_base = Fraction(1, 1000000)
     decoded = 0
     with av.open(str(source / 'camera.mp4')) as container:
         for frame, row in zip(container.decode(video=0), rows):
@@ -251,17 +253,8 @@ def review(source, output, config, reference_start=5., reference_end=7., frame_m
             draw.text((20, 12), 'ORIGINAL QUEST RGB', font=font, fill='white')
             rgb = ImageOps.contain(frame.to_image(), (640, 640));canvas.paste(rgb, ((640-rgb.width)//2, 65))
             draw.text((20, 726), f'source t={row["elapsed_s"]:.2f}s | frame {row["index"]}', font=font, fill='white')
-            hand_panel(canvas, (640, 0), row['hands']['left'], 'left', font, small, views['left'])
-            hand_panel(canvas, (1280, 0), row['hands']['right'], 'right', font, small, views['right'])
-            if frame_method == 'mcp_pinch':
-                for ox in (640, 1280):
-                    draw.rectangle((ox + 20, 550, ox + 619, 650), fill='#172337')
-                    for y, label, color in ((550, 'ORANGE: fingertip midpoint + thumb/index MCP', ORANGE),
-                        (576, 'CYAN: fixed virtual TCP + thumb/index MCP', CYAN),
-                        (602, 'PINK: old fingertip-derived approach direction', PINK),
-                        (628, 'YELLOW: thumb-to-index fingertip chord', '#fde047')):
-                        if row['hands']['left' if ox == 640 else 'right']['valid']:
-                            draw.text((ox + 20, y), label, font=small, fill=color)
+            hand_panel(canvas, (640, 0), row['hands']['left'], 'left', font, small, views['left'], frame_method)
+            hand_panel(canvas, (1280, 0), row['hands']['right'], 'right', font, small, views['right'], frame_method)
             draw.text((20, 787), f'Frame: {frame_method} | Reference: grasp pose {reference_start:g}-{reference_end:g}s. Fixed world view; wrist translation removed.', font=small, fill='white')
             draw.text((20, 820), 'VIRTUAL TARGET REVIEW: camera timing estimated | no calibrated RGB overlay | jaw markers are schematic | tool/contact axes uncalibrated', font=small, fill='#fbbf24')
             draw.text((20, 848), 'No robot commands. Missing/invalid tracking is shown empty. Production IK mapping is unchanged.', font=small, fill='#cbd5e1')
