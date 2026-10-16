@@ -2,6 +2,24 @@
 
 Quest에서 사람의 움직임과 실제 전면 RGB를 수집하고 로봇 retargeting과 학습으로 확장하는 프로젝트입니다.
 
+## Retargeting — 반드시 standard 사용
+
+WiLoR→KUAVO 변환·계산·4분할 렌더링은 **채택된 standard만 사용**합니다.
+날짜별 실험 폴더나 별도 IK/렌더러를 임의로 선택하지 않습니다.
+
+```bash
+cd /home/lab6/Warp
+bash scripts/02_convert/convert_episode_standard.sh \
+  /home/lab6/Warp_data/2026-10-16/17-13-10_7ef9211ae173462d9952a35ebc1014fa
+```
+
+녹화별 **준비된 입력(prepared.json)** 이 필요합니다. 원본 WiLoR·융합·태그 전처리는 별도입니다.
+위 명령은 standard IK → TOPPRA → 중간 자세·MoveIt 검증 → 동일한 4-window 렌더링을 수행합니다.
+**13.35초는 준비된 입력의 IK+시간 재조정만**이며, 전체 episode 처리 시간이 아닙니다.
+
+[실행 방법·입력 준비·정책·시간 측정](docs/RETARGETING_STANDARD.md) ·
+[채택 코드/설정](pipeline/01_dataset/kuavo_standard)
+
 ## 현재 수집: Quest raw v3
 
 - 기본 1280×1280·30fps 요청, Camera2 하드웨어 H.264 녹화.

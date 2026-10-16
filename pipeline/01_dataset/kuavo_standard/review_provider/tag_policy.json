@@ -1,0 +1,112 @@
+{
+  "family": "tag36h11",
+  "size_definition": "black outer border side",
+  "rack": {
+    "id_range": [
+      0,
+      49
+    ],
+    "size_m": 0.04,
+    "geometry_anchor_tag_id": 0,
+    "other_rack_tag_extrinsics_unknown": false,
+    "paper_border_m": 0.005,
+    "paper_size_m": 0.05,
+    "placement_status": "user_adopted_inner_pillar_shelf_front_midpoint",
+    "proposed_slots": {
+      "0": "upper_left",
+      "1": "upper_right",
+      "2": "middle_left",
+      "3": "middle_right"
+    },
+    "tag_offsets_in_geometry_tag_axes_m": {
+      "0": [
+        -0.38,
+        0.0,
+        0.05
+      ],
+      "1": [
+        0.38,
+        0.0,
+        0.05
+      ],
+      "2": [
+        -0.38,
+        -0.61,
+        0.05
+      ],
+      "3": [
+        0.38,
+        -0.61,
+        0.05
+      ]
+    }
+  },
+  "landmark": {
+    "id_range": [
+      50,
+      99
+    ],
+    "size_m": null
+  },
+  "boxes": {
+    "size_m": 0.06,
+    "group_size": 10,
+    "slots": {
+      "0": "front_left",
+      "1": "front_right",
+      "2": "back_left",
+      "3": "back_right",
+      "4-9": "reserved"
+    },
+    "ranges": {
+      "100-199": "A13",
+      "200-299": "A19",
+      "300-399": "B12",
+      "400-499": "H"
+    },
+    "paper_border_m": 0.005,
+    "paper_size_m": 0.07,
+    "paper_border_provenance": "user confirmed 5mm all tags",
+    "alignment": "outer white paper edges flush with wide flap top and outside side edges",
+    "observed_box_ids": [
+      100
+    ],
+    "observed_tags": [
+      100,
+      101
+    ],
+    "A13_full_dimensions_m": [
+      0.265,
+      0.185,
+      0.222
+    ]
+  },
+  "legacy_box_tag_7_enabled": false,
+  "reference": "https://github.com/AprilRobotics/apriltag/blob/master/tag36h11.c",
+  "source_window_s": [
+    0,
+    20
+  ],
+  "box_render": {
+    "faces": "four sides and bottom",
+    "top_open": true,
+    "color": "gold",
+    "alpha": 140
+  },
+  "collision_policy": {
+    "rack": true,
+    "box": "four walls and bottom; interior empty; top open",
+    "box_thickness_m": 0.001,
+    "box_outer_dimensions_preserved": true,
+    "gripper": false,
+    "wrist_arm_torso": true,
+    "collision_margin_m": 0.01
+  },
+  "box_stabilization": {
+    "half_window_s": 0.3,
+    "full_window_s": 0.6,
+    "position": "arithmetic mean",
+    "rotation": "Rotation.mean",
+    "raw_observations_preserved": true
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "WiLoR-KUAVO standard: lazy base, collision-aware native IK, adaptive TCP and official V/A TOPPRA",
+  "adopted_at": "2026-10-17 Asia/Seoul",
+  "adopted_from": "/home/lab6/Warp-review/wilor-kuavo-parameter-search-20261016/winners/R_originalbase_body1000_acc300",
+  "solver_profile": {
+    "name": "standard_lazybase_body1000_acc300",
+    "adaptive": true,
+    "bridge": true,
+    "base": "original",
+    "free_torso": true,
+    "body_scale": 0.1,
+    "body_cont_weight": 1000.0,
+    "acc_weight": 300.0,
+    "solver_position_factor": 0.85,
+    "solver_collision_reserve_m": 0.001,
+    "solver_joint_reserve_rad": 0.001,
+    "solver_orientation_reserve_deg": 0.5
+  },
+  "moveit_validator": {
+    "path": "/home/lab6/Warp-review/wilor-kuavo-standard-env-candidate-20261016/moveit_verify/build/verify",
+    "sha256": "5c352b658dd941112e00a5de50b2c470f7712ed16f1792a1c727469a19da74c0"
+  },
+  "raw_input_preprocessing": "Separate take-specific stage; run accepts prepared reference/world/config. No implicit reuse of another recording.",
+  "previous_standard": "/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017"
+}

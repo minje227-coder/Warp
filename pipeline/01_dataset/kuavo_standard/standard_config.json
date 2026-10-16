@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "hand_mapping": "body_parallel",
+  "world": {
+    "initial_base_pose": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "height_offset_m": 0.0
+  },
+  "input": {
+    "maximum_bracket_s": 0.05,
+    "output_hz": 1000,
+    "wrist_agreement_m": 0.03,
+    "maximum_orientation_speed_rad_s": 20.0
+  },
+  "hand_to_tcp_rotation": {
+    "left": [
+      [
+        -1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ],
+    "right": [
+      [
+        -1,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ]
+  },
+  "gripper": {
+    "closed_pinch_m": 0.015,
+    "open_pinch_m": 0.1,
+    "calibration_verified": false
+  },
+  "base": {
+    "xy_deadband_m": 0.05,
+    "yaw_deadband_rad": 0.1,
+    "frequency_hz": 1.5,
+    "damping_ratio": 1.0,
+    "speed_m_s": 1.2,
+    "yaw_speed_rad_s": 1.2,
+    "accel_m_s2": 1.0,
+    "yaw_accel_rad_s2": 2.0,
+    "max_gap_s": 0.25,
+    "enforce_rate_limits": false
+  },
+  "torso_reference": {
+    "position_enter_m": 0.01,
+    "position_exit_m": 0.005,
+    "angle_enter_rad": 0.035,
+    "angle_exit_rad": 0.0175
+  },
+  "placement": {
+    "frequency_hz": 1.0,
+    "position_deadband_m": 0.03,
+    "angle_deadband_rad": 0.05235987756,
+    "speed_m_s": 0.2,
+    "accel_m_s2": 0.6,
+    "angular_speed_rad_s": 0.6,
+    "angular_accel_rad_s2": 1.2,
+    "enforce_rate_limits": false
+  },
+  "ik": {
+    "velocity_scale": 1.0,
+    "torso_accel_rad_s2": 2.0,
+    "arm_accel_rad_s2": 8.0,
+    "joint_margin_rad": 0.02,
+    "collision_margin_m": 0.01,
+    "collision_validation_step_rad": 0.02,
+    "tcp_position_tolerance_m": 0.01,
+    "tcp_orientation_tolerance_rad": 0.17453292519943295,
+    "chest_position_weight": 10.0,
+    "chest_orientation_weight": 1.0,
+    "elbow_weight": 0.2,
+    "torso_motion_weight": 1000.0,
+    "torso_intent_motion_weight": 1000.0,
+    "torso_follow_motion_weight": 1000.0,
+    "arm_continuity_weight": 100.0,
+    "acceleration_weight": 300.0,
+    "max_iterations": 180,
+    "horizon_frames": 1,
+    "arm_seed_candidates": 3,
+    "horizon_acceleration_weight": 0.002,
+    "horizon_velocity_weight": 0.002,
+    "placement_position_weight": 1000.0,
+    "placement_orientation_weight": 100.0,
+    "placement_continuity_weight": 5.0,
+    "torso_orientation_tolerance_rad": 0.035,
+    "initial_q": [
+      0.06924800608339142,
+      -0.918871880984226,
+      0.8587002040156163,
+      0.016039628984619112,
+      -0.5378513825231983,
+      0.1660111986100597,
+      -0.7286656916256403,
+      -1.113574986802547,
+      -0.6107133481808426,
+      -0.5587215907798104,
+      0.5965349131993538,
+      -0.6084791117068937,
+      0.027910335652185037,
+      0.750669805770336,
+      -0.8887811243897775,
+      0.6441340433591008,
+      0.4568748651989688,
+      0.6236649271280976
+    ],
+    "reuse_verified_plan": false,
+    "bounded_torso": true,
+    "torso_adjust_joint_rad": 0.3,
+    "torso_adjust_position_m": 0.15,
+    "torso_adjust_orientation_rad": 0.035,
+    "torso_adjust_weight": 100.0,
+    "enforce_dynamics": false,
+    "joint_braking": false,
+    "path_continuity_weight": 2.0,
+    "path_curvature_weight": 1.0,
+    "orientation_mode": "body_downward",
+    "box_bend_max_rad": 0.5235987755982988,
+    "hand_orientation_reference_weight": 0.0,
+    "body_down_max_deg": 60.0,
+    "body_down_reference_deg": 45.0,
+    "wrist_camera_flip_only": true,
+    "tool_continuity_weight": 100.0,
+    "select_best_candidate": true,
+    "mutual_tcp_orientation_tolerance_rad": 0.17453292519943295,
+    "environment_world_json": "/home/lab6/Warp-review/wilor-kuavo-window30-base-20261016/data/world.json",
+    "enable_acceleration_cost": true
+  },
+  "limit_provenance": {
+    "velocity": "User requested full URDF/S63 task.info per-joint speed upper bounds; scale=1.0",
+    "arm_acceleration": "Existing GraspSystem motion.max_acceleration_rad_s2=8.0; not a rated hardware bound",
+    "torso_acceleration": "2.0 rad/s^2 is an initial offline experiment setting; hardware/dynamic validation pending",
+    "collision": "S63 task.info selfCollision.minimumDistance=0.01 and GraspSystem collision.margin_m=0.01",
+    "joint_margin": "0.02 rad is a provisional interior margin; URDF hard limits remain authoritative",
+    "tcp_tolerances": "5mm/2deg are offline geometric verification targets; calibration accuracy remains unverified"
+  },
+  "hand_orientation_filter": {
+    "tau_s": 0.04,
+    "maximum_lag_rad": 0.05235987756
+  },
+  "source_end_seconds": 20.0,
+  "initial_pose_reference": {
+    "timestamp_ticks": 639276462631267759,
+    "q": [
+      0.06924800608339142,
+      -0.918871880984226,
+      0.8587002040156163,
+      0.016039628984619112,
+      -0.5378513825231983,
+      0.1660111986100597,
+      -0.7286656916256403,
+      -1.113574986802547,
+      -0.6107133481808426,
+      -0.5587215907798104,
+      0.5965349131993538,
+      -0.6084791117068937,
+      0.027910335652185037,
+      0.750669805770336,
+      -0.8887811243897775,
+      0.6441340433591008,
+      0.4568748651989688,
+      0.6236649271280976
+    ],
+    "base_pose": [
+      -0.027560137336197416,
+      -0.0038501033040068133,
+      0.0
+    ],
+    "baseline_trajectory_sha256": "7f5b94f34f0c70b3e9683884099742947b80b7def46afb53ac25219370e92078"
+  },
+  "tcp_target_offset_world_m": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "input_gap_interpolation": {
+    "enabled": true,
+    "method": "linear XYZ at original timestamps",
+    "bounded_only": true,
+    "unchanged_observed_samples": true,
+    "cross_origin_or_recenter": false,
+    "extrapolation": false
+  },
+  "initial_seed_trajectory": null,
+  "adaptive_tcp_allowance": {
+    "near_surface_m": 0.1,
+    "near_tolerance_m": 0.01,
+    "far_surface_m": 0.2,
+    "far_tolerance_m": 0.02,
+    "transition": "beta(3,3)"
+  },
+  "base_policy": "Existing lazy-base reference, xy deadband 0.05m / yaw deadband 0.1rad; no source-time hold"
+}

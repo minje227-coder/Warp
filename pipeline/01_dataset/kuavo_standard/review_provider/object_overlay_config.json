@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "tag_family": "tag36h11",
+  "pose_method": "OpenCV SOLVEPNP_IPPE_SQUARE",
+  "tag_pose_python": "/home/lab6/humanoid/box_detection/.venv/bin/python",
+  "rack": {
+    "tag_id": 0,
+    "geometry": "object_assets/rack.json",
+    "stabilization": "one_fixed_pose_over_all_selected_video_frames",
+    "position_aggregation": "coordinatewise_median",
+    "rotation_aggregation": "scipy Rotation.mean chordal L2",
+    "inlier_min_radius_m": 0.025,
+    "inlier_median_multiplier": 3,
+    "tag_size_m": 0.04,
+    "paper_margin_m": 0.005,
+    "paper_size_m": 0.05,
+    "tag_offsets_in_geometry_tag_axes_m": {
+      "0": [
+        -0.38,
+        0.0,
+        0.05
+      ],
+      "1": [
+        0.38,
+        0.0,
+        0.05
+      ],
+      "2": [
+        -0.38,
+        -0.61,
+        0.05
+      ],
+      "3": [
+        0.38,
+        -0.61,
+        0.05
+      ]
+    },
+    "placement": "paper side flush to inner pillar, vertical center at shelf front thickness midpoint"
+  },
+  "box": {
+    "type": "S(A13)",
+    "size_m": [
+      0.265,
+      0.185,
+      0.222
+    ],
+    "stabilization": "centered_time_window_position_and_rotation_mean",
+    "half_window_s": 0.3,
+    "maximum_gap_s": 0.1,
+    "position_mean": "arithmetic",
+    "rotation_mean": "scipy Rotation.mean chordal L2",
+    "boundary_policy": "truncate",
+    "stationary_lock": false,
+    "candidate_reselection": false,
+    "tag_size_m": 0.06,
+    "paper_margin_m": 0.005,
+    "paper_size_m": 0.07,
+    "group_size": 10,
+    "slots": {
+      "0": "front_left",
+      "1": "front_right",
+      "2": "back_left",
+      "3": "back_right",
+      "4-9": "reserved"
+    },
+    "alignment": "outer white paper edges flush with wide flap top and outside side edges"
+  },
+  "pose_selection": {
+    "minimum_tag_y_up_component": 0.65,
+    "maximum_reprojection_rms_px": 2.0
+  },
+  "views": [
+    "quest_right_rgb",
+    "human_kuavo_common_world",
+    "kuavo_head_20deg_down"
+  ],
+  "external_rgb_unchanged_before_encoding": true,
+  "render_style": "rack wireframe; box four filled sides and bottom; top open",
+  "colors": {
+    "rack": "green",
+    "box": "gold"
+  },
+  "extra_display_transform": false,
+  "world_alignment_verified": false,
+  "ground_height_correction_m": 0.0,
+  "final_video": "object-overlay/four-views-rack-box.mp4",
+  "verification": "object-overlay/verification.json",
+  "tag_policy": "tag_policy.json",
+  "box_fill_alpha": 140
+}
