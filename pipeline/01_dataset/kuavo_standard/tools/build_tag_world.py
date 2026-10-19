@@ -36,16 +36,17 @@ pairs=[x for x in read(raw/'processed/paired_frames.jsonl') if x['external_index
 detections=collections.defaultdict(dict)
 for r in read(raw/'processed/apriltag.jsonl'):detections[r['decoded_index']][r['tag_id']]=r
 L,W,H=box_policy['size_m'];tag=box_policy['tag_size_m'];white=box_policy['paper_margin_m'];h=tag/2
-def bundle_observation(ds,centers,size,Rwc,twc):
+def bundle_observation(ds,centers,size,Rwc,twc,inplane_rotations=None):
  settings=object_policy['multi_tag_pose'];selection=object_policy['pose_selection']
  return estimate_tag_bundle(ds,centers,size,K,Rwc,twc,
   max_rms_px=selection['maximum_reprojection_rms_px'],min_up=selection['minimum_tag_y_up_component'],
   ransac_error_px=settings['ransac_reprojection_error_px'],ransac_iterations=settings['ransac_iterations'],
-  ransac_confidence=settings['ransac_confidence'])
+  ransac_confidence=settings['ransac_confidence'],tag_inplane_rotations_rad=inplane_rotations)
 def observation_audit(q):
  return {k:q[k] for k in ['method','tag_ids','observed_tag_ids','rejected_tag_ids','corner_count','per_tag_rms_px','joint_failure_reason'] if k in q}
 rack_centers={tid:off-rack_anchor_offset for tid,off in rack_offsets.items()}
 box_centers={int(tid):np.asarray(off,dtype=float) for tid,off in box_policy['tag_offsets_in_front_face_axes_m'].items()}
+box_rotations={int(tid):float(angle) for tid,angle in box_policy.get('tag_inplane_rotations_rad',{}).items()}
 
 frames=[];rack_obs=[];boxes=[]
 for pair in pairs:
@@ -57,7 +58,7 @@ for pair in pairs:
  rack_q=bundle_observation(ds,rack_centers,rack_policy['tag_size_m'],Rwc,twc)
  if rack_q is not None:
   rack_obs.append(rack_q);rec['rack_observation']=dict(observation_audit(rack_q),rms_px=rack_q['rms'])
- box_q=bundle_observation(ds,box_centers,tag,Rwc,twc)
+ box_q=bundle_observation(ds,box_centers,tag,Rwc,twc,box_rotations)
  if box_q is not None:
   q=box_q;front=q['rotation'][:,2].copy();front/=np.linalg.norm(front);up=np.array([0.,0.,1.])-front*front[2];up/=np.linalg.norm(up);along=np.cross(up,front);R=np.column_stack((along,-front,up));center=q['position']-front*W/2
   rec['box_raw']=dict(id='box_100_A13',position=center.tolist(),quaternion_xyzw=Rotation.from_matrix(R).as_quat().tolist(),dimensions=[L,W,H],**observation_audit(q),rms_px=q['rms']);boxes.append((t,rec['box_raw']))
@@ -83,4 +84,5 @@ samples=[dict(index=r['external_index'],elapsed_s=elapsed(r['external_index']),w
 (c/'data/world.json').write_text(json.dumps(dict(samples=samples)));(c/'data/frame-scenes.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in frames))
 audit=dict(box_half_window_s=half_window_s,box_full_window_s=2*half_window_s,take=take,source_window_s=[0,args.end],paired_frames=len(frames),box_observed_frames=len(boxes),box_max_observation_gap_s=gap,box_pose_methods=dict(collections.Counter(x['method'] for t,x in boxes)),box_reprojection_rms_px=dict(median=float(np.median([x['rms_px'] for t,x in boxes])),maximum=float(max(x['rms_px'] for t,x in boxes))),rack_observations=len(rack_obs),rack_inliers=int(sum(keep)),box_tag_black_side_m=tag,white_margin_m=white,white_margin_is_approximate=False,paper_side_m=tag+2*white,tag_center_from_top_and_outer_side_m=h+white,old_box_tag7_disabled=True)
 audit.update(rack_tag_ids=sorted(rack_offsets),rack_observations_by_tag=dict(collections.Counter(tid for x in rack_obs for tid in x['tag_ids'])),rack_pose_methods=dict(collections.Counter(x['method'] for x in rack_obs)),rack_joint_failure_frames=sum(x['method']=='single_tag_fallback' for x in rack_obs),box_joint_failure_frames=sum(x['method']=='single_tag_fallback' for _,x in boxes),rack_tag_offsets_in_geometry_tag_axes_m=rack_policy['tag_offsets_in_geometry_tag_axes_m'])
+audit.update(box_tag_offsets_in_front_face_axes_m=box_policy['tag_offsets_in_front_face_axes_m'],box_tag_inplane_rotations_rad=box_policy.get('tag_inplane_rotations_rad',{}),box_tag_layout_calibration=box_policy.get('tag_layout_calibration'))
 (c/'data/object-audit.json').write_text(json.dumps(audit,indent=2));print(json.dumps(audit,indent=2))

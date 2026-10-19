@@ -76,7 +76,7 @@
       "3": "back_right",
       "4-9": "reserved"
     },
-    "alignment": "outer white paper edges flush with wide flap top and outside side edges",
+    "alignment": "tag100 preserves original front-face anchor; tag101 uses adopted fixed image-calibrated relative position and in-plane rotation",
     "shell_thickness_m": 0.001,
     "top_open": true,
     "pose_method": "joint_multi_tag_with_explicit_single_tag_fallback",
@@ -87,11 +87,16 @@
         0.0
       ],
       "101": [
-        0.0975,
-        0.076,
+        0.0869765487967015,
+        0.07074376449132885,
         0.0
       ]
-    }
+    },
+    "tag_inplane_rotations_rad": {
+      "100": 0.0,
+      "101": -0.044749254981557816
+    },
+    "tag_layout_calibration": "box_tag_calibration.json"
   },
   "pose_selection": {
     "minimum_tag_y_up_component": 0.65,

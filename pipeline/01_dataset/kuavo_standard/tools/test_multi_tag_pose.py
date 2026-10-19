@@ -85,4 +85,42 @@ class BundlePoseTests(unittest.TestCase):
    best=min(singles,key=lambda q:q['rms']);single.append(np.linalg.norm(best['position']-(self.Rwc@self.t+self.twc)))
   self.assertLess(np.median(joint),np.median(single))
 
+
+class CalibratedBoxTests(unittest.TestCase):
+ def setUp(self):
+  from pathlib import Path
+  import json
+  self.base=BundlePoseTests();self.base.setUp()
+  root=Path(__file__).resolve().parent.parent
+  self.config=json.loads((root/"object_overlay_config.json").read_text())
+  self.cal=json.loads((root/"box_tag_calibration.json").read_text())
+  self.centers={int(k):np.array(v) for k,v in self.config["box"]["tag_offsets_in_front_face_axes_m"].items()}
+  self.angles={int(k):v for k,v in self.config["box"]["tag_inplane_rotations_rad"].items()}
+ def detections(self):
+  result={}
+  for tid,center in self.centers.items():
+   relative=cv2.Rodrigues(np.array([0.,0.,self.angles[tid]]))[0]
+   points=square(.06)@relative.T+center
+   uv=cv2.projectPoints(points,cv2.Rodrigues(self.base.R)[0],self.base.t,self.base.K,None)[0].reshape(4,2)
+   result[tid]={"corners":uv[[3,2,1,0]].tolist()}
+  return result
+ def solve(self,ds):
+  b=self.base
+  return estimate_tag_bundle(ds,self.centers,.06,b.K,b.Rwc,b.twc,tag_inplane_rotations_rad=self.angles)
+ def test_rotated_right_tag_joint_recovers_box_frame(self):
+  q=self.solve(self.detections());self.base.assert_pose(q)
+  self.assertEqual(q["method"],"joint_multi_tag");self.assertEqual(q["corner_count"],8)
+ def test_rotated_right_tag_alone_recovers_box_frame(self):
+  ds=self.detections();q=self.solve({101:ds[101]});self.base.assert_pose(q)
+  self.assertEqual(q["method"],"single_tag");self.assertEqual(q["tag_ids"],[101])
+ def test_left_tag_anchor_is_preserved(self):
+  ds=self.detections();q=self.solve({100:ds[100]});self.base.assert_pose(q)
+  np.testing.assert_array_equal(self.centers[100],[-.0975,.076,0.])
+ def test_configuration_matches_approved_fixed_candidate(self):
+  np.testing.assert_allclose(self.centers[101]-self.centers[100],self.cal["relative_translation_101_in_tag100_axes_m"],atol=1e-16)
+  self.assertEqual(self.angles[101],self.cal["relative_inplane_rotation_101_rad"])
+  self.assertEqual(self.cal["selected_review_candidate"],"early_to_late")
+  self.assertFalse(self.cal["time_dependent_switching"])
+  self.assertEqual(self.config["box"]["size_m"],[.265,.185,.222])
+
 if __name__=='__main__':unittest.main(verbosity=2)

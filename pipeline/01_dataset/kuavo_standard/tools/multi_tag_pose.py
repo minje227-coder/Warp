@@ -1,7 +1,8 @@
 """Estimate a rigid tag bundle from all consistent visible tag corners.
 
 Input corners use pupil-apriltags order (BL, BR, TR, TL). Tag centers and
-parallel, upright tag faces are expressed in one object coordinate system.
+coplanar tag faces are expressed in one object coordinate system. Per-tag
+in-plane rotations map printed tag axes into that object coordinate system.
 """
 import cv2
 import numpy as np
@@ -35,7 +36,8 @@ def _world_pose(obj, rv, tv, camera_matrix, camera_rotation, camera_position, mi
 def estimate_tag_bundle(detections, tag_centers, tag_size, camera_matrix,
                         camera_rotation, camera_position, *, max_rms_px=2.0,
                         min_up=0.65, ransac_error_px=3.0,
-                        ransac_iterations=200, ransac_confidence=0.999):
+                        ransac_iterations=200, ransac_confidence=0.999,
+                        tag_inplane_rotations_rad=None):
     """Joint planar PnP + LM, with whole-tag rejection and explicit fallback.
 
     A joint result must explain at least two complete tags. A failed joint
@@ -47,7 +49,9 @@ def estimate_tag_bundle(detections, tag_centers, tag_size, camera_matrix,
     if not ids:
         return None
     local = square(tag_size)
-    objects = np.array([local + tag_centers[tid] for tid in ids], dtype=float)
+    angles = tag_inplane_rotations_rad or {}
+    rotations = {tid: cv2.Rodrigues(np.array([0., 0., float(angles.get(tid, 0.))]))[0] for tid in ids}
+    objects = np.array([local @ rotations[tid].T + tag_centers[tid] for tid in ids], dtype=float)
     images = np.array([np.asarray(detections[tid]['corners'], dtype=float)[[3, 2, 1, 0]] for tid in ids])
     if not np.isfinite(objects).all() or not np.isfinite(images).all():
         return None
@@ -61,8 +65,11 @@ def estimate_tag_bundle(detections, tag_centers, tag_size, camera_matrix,
         candidates = []
         for rv, tv in zip(rvs, tvs):
             pose = _world_pose(local, rv, tv, camera_matrix, camera_rotation,
-                               camera_position, min_up)
+                               camera_position, -1.)
             if pose is None:
+                continue
+            pose["rotation"] = pose["rotation"] @ rotations[tid].T
+            if pose["rotation"][2, 1] < min_up:
                 continue
             rms = float(np.sqrt(np.mean(_residuals(local, uv, rv, tv, camera_matrix)**2)))
             pose['position'] = pose['position'] - pose['rotation'] @ tag_centers[tid]
@@ -70,8 +77,9 @@ def estimate_tag_bundle(detections, tag_centers, tag_size, camera_matrix,
                         per_tag_rms_px={str(tid): rms})
             candidates.append(pose)
             if rms <= max_rms_px:
-                rotation = cv2.Rodrigues(rv)[0]
-                single_seeds.append((rv.copy(), np.asarray(tv).reshape(3) - rotation @ tag_centers[tid]))
+                rotation = cv2.Rodrigues(rv)[0] @ rotations[tid].T
+                object_rv = cv2.Rodrigues(rotation)[0]
+                single_seeds.append((object_rv, np.asarray(tv).reshape(3) - rotation @ tag_centers[tid]))
         if candidates:
             best = min(candidates, key=lambda q: q['rms'])
             if best['rms'] <= max_rms_px:
