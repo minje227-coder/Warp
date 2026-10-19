@@ -16,7 +16,9 @@
       "0": "upper_left",
       "1": "upper_right",
       "2": "middle_left",
-      "3": "middle_right"
+      "3": "middle_right",
+      "4": "upper_center",
+      "5": "middle_center"
     },
     "tag_offsets_in_geometry_tag_axes_m": {
       "0": [
@@ -36,6 +38,16 @@
       ],
       "3": [
         0.38,
+        -0.61,
+        0.05
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.05
+      ],
+      "5": [
+        0.0,
         -0.61,
         0.05
       ]

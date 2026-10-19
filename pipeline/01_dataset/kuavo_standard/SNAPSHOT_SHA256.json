@@ -1,12 +1,12 @@
 {
-  "README.md": "3c49586b3783a5a76de68cfb2969e79289e81da6e33eefa83aaae5e23ad996f1",
+  "README.md": "7672eb533bd3c21f0a99ef4713f391c814af0e54db8a5e006d4289eb68869750",
   "standard_config.json": "329b073706fb6c8d6311b19459f883f02b2ea01b3823e5212fe0197c269bb2dd",
   "STANDARD.json": "3149e2ffd2a917dbb16ebdd47cc4f530e9dbc79523ee6ba1c94a91b70507d0a1",
-  "object_overlay_config.json": "e120911236d0035e3a2588631bbea15c4b9b64da75b2673c3f2f862cbce0b98c",
+  "object_overlay_config.json": "6c4d9b37aaabab3e27d39e8d6b9f3bcdf014c8ccc3671ba311d68bdc843b29c1",
   "requirements.txt": "76c125a2a35e7447cbc9fbc03b80d80a822b93604c5568f24e797921dfc8db97",
   "standard.py": "0a763a6d9899cda98d91cac062397cde619dcf667d78898755d28b089d0d100b",
   "benchmark.json": "ad4fa6ed5a7643e6d0c58b42cc89eac428e8925ca6f8e72bb8f53a6943157b16",
-  "tag_policy.json": "eaf7cddca6421b3a15e2290757de8d3587294c00e9c82a1e114cbaef8890bbde",
+  "tag_policy.json": "a581aeb11bc61846796ec7ff43e67fafd535b0accaf8f66d8b0f6d42540b58be",
   "motion_policy.json": "70ab53eb797c13ec5d1168511c85aa69c99a28cf9527bba390479e240629a747",
   "review_provider/input_gap_fill.py": "e9ad5b5a73c16a95b9dfef3d8d4c6e15f1b2ab55843857778982bc6a085ea627",
   "review_provider/render_objects.py": "8e4c39092c8b00245628df4b885e3ad6bb3e023bb89209c9b478f11035ae1306",
@@ -37,5 +37,11 @@
   "pipeline/source/retarget/convert.py": "da5ce366cc6febf4008cc0d612f12de660a8715874d75c813984a9f8f75859ff",
   "pipeline/source/retarget/__init__.py": "26a1b58738d92790887d45687aed09329e02c46f339596f35cabf255fc790f97",
   "pipeline/source/retarget/hand_overlay.py": "f4d2f0ea5777a84b44d396c77c203f251d77a68859950ed2b1ea62003d37558d",
-  "pipeline/source/retarget/hand_mapping.py": "60f3e203c2e60d4e1c49b2fe974546b42a164c4ebb180f397caaed9824361975"
+  "pipeline/source/retarget/hand_mapping.py": "60f3e203c2e60d4e1c49b2fe974546b42a164c4ebb180f397caaed9824361975",
+  "tools/build_tag_world.py": "d8587303db594ce6326452713640af8653b9426ecfed6dfd5c99d77ec8d28a1c",
+  "tools/multi_tag_pose.py": "02f1d155df1df7cf53d078a475500bfc3d5fd801204668aa338df7a200761cbb",
+  "tools/test_multi_tag_pose.py": "1efbeebb37dece632d14b7058cc95530b27ed88c68c85f82862e0171fd3d72d4",
+  "tools/box_shell.py": "f96462c518bee4cc5cbf0a422a90b37ebc6a4341bdf02ba97f0f80ba90a183d3",
+  "object_assets/rack.json": "4866c5a60a5d0319169f8b78d705f528af59b9a2b33159556f68453d640aba2b",
+  "object_assets/rack_geometry.py": "f637fc5ab498877eb5e0e788192fe77bdcbd09740ada56648461d1341abb703f"
 }
