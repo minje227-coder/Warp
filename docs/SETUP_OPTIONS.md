@@ -45,4 +45,9 @@ bash scripts/bootstrap.sh --dry-run capture video retarget
 
 Settings live in `configs/local.env` and are **ignored by Git**. Human pose, faces, videos, and recordings belong in ignored `local_data/`; none of them belong in tracked source control. This selection does not clone code by default; with `--download` it only retrieves **pinned Git submodules**, subject to public upstream availability and their own licenses.
 
-`capture` refers to Quest Body/Hand streaming and CSV recording examples. The unified implementation adds RGB and same-frame AprilTag to the existing XRT app; see UNIFIED_CAPTURE.md for its software-tested, hardware-pending status. The separate Camera2 helper is retained as a legacy mode. The `video` upstream remains reference material. Hardware acquisition sync/world calibration, retargeting for the 4-DoF waist, gripper mapping, collision-aware validation, policy training, and RL fine-tuning are **not yet implemented**. Confirm device support and research licenses before deploying.
+이 메뉴는 플랫폼·모듈 선택과 upstream 소스 준비를 담당합니다.
+현재 Quest 수집·수신 환경은 [raw v3 안내](RAW_CAPTURE.md),
+채택된 KUAVO offline 변환은 [standard 안내](RETARGETING_STANDARD.md)를 따릅니다.
+선택 메뉴의 준비 완료가 APK 설치·물리 좌표계 보정·로봇 실행 검증을 뜻하지는 않습니다.
+기존 Camera2 helper와 통합 v1/v2 안내는 과거 수집 경로로 보존합니다.
+검증 범위와 이후 단계는 [프로젝트 README](../README.md)와 [검증 기록](RETARGETING_VALIDATION.md)을 참고하세요.

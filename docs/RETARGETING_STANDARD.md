@@ -1,4 +1,4 @@
-# Retargeting standard — Quest → Kuavo S63
+# Retargeting standard — Quest → KUAVO S63
 
 > **MUST / 반드시 standard 사용:** WiLoR→KUAVO 변환·계산·4분할 렌더링은
 > 채택된 `wilor-kuavo-standard/standard.py`와 그 설정을 사용한다. 날짜가 붙은
@@ -75,7 +75,8 @@ is preserved in `kuavo_standard/review_provider/`; this is a data contract, not 
 automatic raw-data preprocessing stage. See the frozen renderer for exact inputs.
 `--no-render` explicitly skips video; four-window rendering is the default.
 
-## Implementation from the beginning
+## 처리 단계
+
 
 | Stage | Used | Purpose |
 |---|---|---|
@@ -87,13 +88,34 @@ automatic raw-data preprocessing stage. See the frozen renderer for exact inputs
 | Time assignment | TOPPRA | Retiming of the common 21-coordinate path using official S63 reference-generator velocity/acceleration values |
 | Verification / review | Drake FK/distance, MoveIt2 PlanningScene; MuJoCo + PyAV | Verify the path and render four synchronized views |
 
-**MoveIt checks collision/bounds/FK; Drake/SNOPT solves IK; TOPPRA changes timing.**
-The final candidate does not use MoveIt's KDL as its main IK solver. The 30-frame
-recovery experiment was an earlier continuity investigation; the adopted native
-runner uses previous-pose/reference seeds and the existing path-collision retry.
-A longer-window recovery is not silently claimed for every failed new recording.
+MoveIt은 충돌·관절 범위·FK를 검증하고, Drake/SNOPT는 IK를, TOPPRA는 시간 재조정을 담당합니다.
 
-## Adopted policy
+## 물체·태그 추정
+
+`tools/build_tag_world.py`는 별도의 새 출력 디렉터리에 해당 녹화의 world를 준비합니다.
+OpenCV와 NumPy/SciPy가 필요하며, lab6에서는 기존 box_detection의 cv2와
+`.venv-retarget`의 NumPy/SciPy를 사용합니다.
+
+- **랙:** tag36h11, 검은 한 변 40mm·흰 여백 5mm. 정면 위쪽 `0 — 4 — 1`, 중간 `2 — 5 — 3`.
+  양끝 종이 옆변은 기둥 안쪽 경계에, 중심 높이는 선반 앞면 두께 중앙에 맞춥니다.
+  양끝 중심 간격 760mm, 두 줄 높이 차이 610mm입니다. 선택 구간의 관측으로 고정 자세 하나를 계산합니다.
+- **박스:** 현재 A13 100·101, 검은 한 변 60mm·흰 여백 5mm.
+  박스 외형은 265×185×222mm이며, 100의 원래 기준 위치를 유지한 고정 상대 배치 보정을 사용합니다.
+  정확한 위치·회전과 출처는 [보정 설정](../pipeline/01_dataset/kuavo_standard/box_tag_calibration.json)에 있습니다.
+  시간 구간별 보정 교체 없이 같은 배치를 사용하며 박스 pose는 기존 ±0.3초 평균을 적용합니다.
+- **공동 추정:** 두 개 이상 보이면 알려진 상대 위치·평면 회전으로 코너를 모아
+  planar PnP/RANSAC과 LM 재최적화를 수행합니다. 태그 단위로 이상치를 제외하고,
+  공동 결과에는 온전한 태그 두 개 이상이 필요합니다.
+- **선택 기준:** 태그별 RMS 2px, 코너 오차 3px. 한 개만 보이거나 공동 추정이 실패하면
+  단일 추정으로 처리합니다. 공동 실패는 `single_tag_fallback`으로 구분하고,
+  관측·사용·제외 ID, 사용 코너 수와 오차를 기록합니다.
+
+태그 크기·배치는 [tag_policy.json](../pipeline/01_dataset/kuavo_standard/tag_policy.json),
+추정 설정은 [object_overlay_config.json](../pipeline/01_dataset/kuavo_standard/object_overlay_config.json)이 기준입니다.
+실제 배치가 다른 녹화에 다른 recording의 world를 재사용하지 않습니다.
+
+## 채택 IK·시간·렌더링 정책
+
 
 - Original grasp point, world offset **0**. Down cone **0–60°**, bimanual parallel
   tolerance **10°**, mount-aware wrist-camera anti-flip; head joints remain fixed.
@@ -135,35 +157,8 @@ reference-generator settings, not a load-specific hardware execution certificate
 one full-body skeleton, body lines 7px / hand lines 3px, gold filled box sides/bottom,
 open top and green rack. Do not apply a display translation to hide target errors.
 
-## Measured time: calculation is not total episode processing
+## 소스·환경
 
-For the adopted 20-second demo, using already prepared input:
-
-| Stage | Wall time |
-|---|---:|
-| Native IK | **11.72s** |
-| TOPPRA timing | **1.63s** |
-| IK + timing subtotal | **13.35s** |
-| Dense Drake verification | **45.55s** |
-| MoveIt verification | Additional; not separately timed |
-| Four-window rendering | **16.87s** |
-| Duration of the resulting motion | **10.09s** — playback time, not calculation time |
-
-**13.35s excludes WiLoR inference, input fusion, tag/world preparation, validation
-and video rendering.** Existing saved trajectories do not need IK again for replay.
-The robot has not physically executed this offline result.
-
-Verification: **597 valid knots**, **6,257 dense states**, MoveIt collision/bounds
-failures **0**; the standard entry point reproduced all 600 source rows' validity,
-base and joint solutions exactly. Minimum sampled clearance **10.89mm**. The first
-three observations were unavailable; 597 is not a claim of 600 solved inputs.
-
-Other recording: 417 prepared states solved, no MoveIt collisions; 70 dense states
-at source 14.18–14.48s exceeded TCP allowance. That result was rejected, not promoted.
-Its 23 missing/failed-reference rows and 10 unobserved-box rows were outside that
-prepared-input test. This is not a full success claim for arbitrary recordings.
-
-## Source snapshot and existing runtime
 
 `SNAPSHOT_SHA256.json` freezes the implementation/configuration. The lab6 runtime
 keeps the validated recording artifacts and `CURRENT.json`; the source snapshot
@@ -174,62 +169,5 @@ URDF/meshes and prepare the episode inputs. `STANDARD.json` records the current
 lab6 validator binary path/hash and `motion_policy.json` records rate limits.
 Those host-dependent paths must be configured for a different machine.
 
-The previous runtime is preserved at
-`/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017`.
-
-## 랙 태그 배치 (2026-10-19 채택)
-
-랙 정면 기준 위쪽 선반은 `0 — 4 — 1`, 중간 선반은 `2 — 5 — 3`.
-4는 0·1 중심 사이의 정중앙, 5는 2·3 중심 사이의 정중앙이며 각 줄은 같은 높이와 방향이다.
-태그는 tag36h11, 검은 외곽 한 변 40mm, 사방 흰 여백 5mm, 종이 전체 50mm.
-양끝 종이 옆변은 기둥 안쪽 경계에 맞추고, 태그 중심은 선반 앞면 두께 중앙에 맞춘다.
-좌우 끝 중심 간격 760mm, 중앙과 양끝 간격 각각 380mm, 두 줄 높이 차이 610mm.
-geometry tag 좌표계에서 4의 중심은 `[0, 0, 0.05]`m, 5는 `[0, -0.61, 0.05]`m.
-기존 0~3의 위치와 geometry 기준은 유지한다. 새 배치는 이후 녹화의 태그/world 준비에 적용하며,
-과거 녹화의 prepared world와 검증 결과는 당시 배치를 그대로 사용한다.
-
-## 랙·박스 공동 태그 자세 추정 (2026-10-19)
-
-새 녹화의 world 준비는 `tools/build_tag_world.py`와 `tools/multi_tag_pose.py`를 사용한다.
-랙은 0~5, 현재 A13 박스는 기존 좌상단 100·우상단 101의 알려진 위치를 사용한다.
-한 개만 보이면 기존 IPPE_SQUARE를 사용하고, 두 개 이상이면 보이는 태그의 코너를
-공통 물체 좌표계에 모아 공동 planar PnP/RANSAC과 LM 재최적화를 수행한다.
-태그 단위로 이상치를 제외하며 공동 결과는 온전한 태그 두 개 이상을 설명해야 한다.
-태그별 RMS 2px 및 코너 3px 기준을 통과하지 못하면 기존 최선 단일 추정으로 복귀하되
-`single_tag_fallback`과 실패 이유를 기록한다. 이를 공동 추정 성공으로 집계하지 않는다.
-원래 관측 ID, 사용/제외 ID, 사용 코너 수, 태그별 오차를 프레임별로 남긴다.
-랙은 선택 구간에서 고정 자세 하나로 통합하고, 박스는 기존 ±0.3초 평균을 유지한다.
-박스 외형·태그 인쇄 크기, 원본 영상/타임스탬프, prepared world, CURRENT 결과와 IK 정책은 보존한다.
-
-박스 보정 채택 전의 0~20초 입력으로 world 생성 검증: 랙의 다중 검출 115프레임 중 114프레임에서
-공동 추정 통과, 1프레임은 명시적 단일 복귀. 박스의 다중 검출 486프레임은 모두 공동
-오차 기준을 통과하지 못해 단일 복귀했으며 박스 위치 결과는 기존과 같다.
-이는 박스 공동 추정의 실영상 정확도 향상을 입증한 결과가 아니다. 기존 좌상단/우상단
-배치를 유지한 채 부착 기하와 관측의 불일치 원인을 별도로 확인해야 한다.
-합성 검증은 랙 63개 부분집합, 박스 공동 8코너, 3태그 12코너, 이상 태그/코너 제외,
-단일 추정 호환성 및 잡음 조건을 포함한다. 후속 박스 태그 보정 채택은 아래 절에 기록한다.
-
-태그/world 준비에는 OpenCV가 추가로 필요하다. lab6에서는 기존 box_detection의 cv2와
-`.venv-retarget`의 NumPy/SciPy를 사용하며, IK 실행 환경을 새로 설치하거나 변경하지 않는다.
-원본 전처리와 IK 실행의 경계는 그대로다. `--root`는 별도의 새 world 출력 디렉터리로 지정한다.
-
-## 박스 태그 보정 채택 (2026-10-19)
-
-실영상 투영 비교에서 사용자가 승인한 `early_to_late` 후보를 고정 배치로 채택했다.
-0~7초에서 추정하고 13~20초 투영에 사용한 값이며, 시간 구간에 따라 보정값을 교체하지 않는다.
-100을 기준으로 101의 상대 위치는 `[0.1844765487967015, -0.005256235508671144, 0]`m,
-상대 평면 회전은 `-0.044749254981557816`rad (-2.5639434468°)이다.
-100의 front-face 기준 위치 `[-0.0975, 0.076, 0]`m는 유지하고,
-101은 `[0.0869765487967015, 0.07074376449132885, 0]`m로 설정한다.
-태그별 평면 회전을 공동 코너 구성과 단일 태그→박스 좌표 변환 모두에 적용한다.
-태그 한 개만 보일 때도 보정된 같은 박스 좌표계로 추정한다.
-
-보정 출처·검토 영상 SHA256·검증 범위는 `box_tag_calibration.json`에 기록했다.
-박스 외형 265×185×222mm, 태그 60mm, 흰 여백 5mm, ±0.3초 평균,
-2px 태그 RMS/3px 코너 기준 및 실패 시 명시적 단일 복귀 정책은 유지한다.
-현재 100·101 태그가 부착된 박스의 영상 기반 상대 배치 보정이며 실측 치수라고 해석하지 않는다.
-
-같은 0~20초 world 생성에서 관측 580프레임을 보존했다. 두 태그가 검출된 486프레임 중
-484프레임은 공동 추정, 2프레임은 명시적 단일 복귀; 한 태그만 보인 94프레임은 단일 추정이다.
-12개 태그 자세 테스트와 5개 episode CLI 테스트가 통과했다. 기존 prepared world,
-CURRENT의 검증 결과·로봇 궤적은 보존하고 새 world 준비부터 이 보정값을 사용한다.
+상세 수치·녹화별 성공/실패·시간 측정은 [검증 기록](RETARGETING_VALIDATION.md)에 모았습니다.
+이전 수집 방식과 초기 로드맵은 [README 보존본](history/README_BEFORE_CLEANUP_20261019.md)에 있습니다.

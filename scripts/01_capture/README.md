@@ -1,9 +1,16 @@
-# Capture scripts
+# Quest 수집
 
-- `install_receiver.sh`: pinned XRT_devices[xr,recording]를 프로젝트 venv에 설치.
-- `build_quest_rgb.sh`: Android Camera2 보조 앱을 빌드/서명. JDK + API34 SDK/build-tools 필요.
-- `prepare_quest_rgb.py`: ADB로 연결된 Quest에 helper APK 설치·권한·local receiver 설정. 생성 token config는 Git 제외.
-- `record_body.sh`: **Skeleton + physical Quest RGB 기본 녹화**. `--body-only`로만 RGB 제외.
-- `validate_body.sh`: Skeleton, required RGB JPEG/timestamps/MP4 및 metadata 검증.
+현재 수집 경로는 **Quest raw v3**입니다. 볼륨 업으로 시작·종료하고 원본은 PC로 비동기 전송합니다.
+설치·데이터 형식·수신기·전처리 worker는 [raw v3 안내](../../docs/RAW_CAPTURE.md)를 따릅니다.
 
-[전체 설치·실행](../../README.md) · [수집과 시간 기준](../../docs/CAPTURE_GUIDE.md)
+| 경로 | 역할 |
+|---|---|
+| `systemd/` | lab6 원본 수신·전처리 user service |
+| `build_unified_quest.py` | 통합 Quest 앱 빌드 |
+| `smoke_camera/` | 별도 카메라 probe 도구 |
+| `record_body.sh`, `validate_body.sh` | 이전 수집·검증 진입점 |
+| `build_quest_rgb.sh`, `prepare_quest_rgb.py` | 이전 Camera2 companion 앱 |
+
+이전 방식의 사용법은 [통합 수집 기록](../../docs/UNIFIED_CAPTURE.md)과
+[companion 안내](../../docs/LEGACY_COMPANION.md)에 보존되어 있습니다.
+[프로젝트 시작 안내](../../README.md)
