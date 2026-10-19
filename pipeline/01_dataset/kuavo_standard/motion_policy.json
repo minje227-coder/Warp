@@ -5,7 +5,7 @@
   "jerk_limits_enabled": false,
   "lowlevel_kalman_applied": false,
   "source_times_preserved": true,
-  "geometry": "Natural cubic spline through optimized path knots; independent dense verification required",
+  "geometry": "Constrained C2 B-spline with fixed lazy-base curve; independent dense verification required",
   "endpoint_velocities": "Start and end at rest; no physical initial approach planned",
   "units": "base x/y metres; yaw and 18 joints radians",
   "limits": {
@@ -96,5 +96,6 @@
   "solver_position_factor": 0.85,
   "solver_collision_reserve_m": 0.001,
   "runtime_root": "/home/lab6/Warp-review/wilor-kuavo-standard",
-  "previous_standard_backed_up": "/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017"
+  "previous_standard_backed_up": "/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017",
+  "geometry_revision": "2026-10-20"
 }

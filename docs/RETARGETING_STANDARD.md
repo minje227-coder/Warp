@@ -21,7 +21,7 @@ bash scripts/02_convert/convert_episode_standard.sh \
   /home/lab6/Warp_data/2026-10-16/17-13-10_7ef9211ae173462d9952a35ebc1014fa
 ```
 
-This runs **native Drake IK → TOPPRA → dense verification → MoveIt verification →
+This runs **native Drake IK → constrained C2 B-spline refinement → TOPPRA → dense verification → MoveIt verification →
 the same four-window rendering**. It uses a unique output directory under
 `$KUAVO_STANDARD_RUNTIME/results/` and refuses to overwrite existing results.
 A failed IK/dense check is not accepted as an executable trajectory. The selected
@@ -131,7 +131,7 @@ OpenCV와 NumPy/SciPy가 필요하며, lab6에서는 기존 box_detection의 cv2
 - Preserve source timestamps. Bounded missing-input interpolation and an isolated
   hand-target/aperture spike rule are explicit; raw recordings and observed skeletons
   remain unchanged. Missing initial observations are not extrapolated.
-- Natural cubic path + TOPPRA. Official velocity/acceleration values below; jerk and
+- Constrained C2 B-spline path + TOPPRA (2026-10-20 revision). Official velocity/acceleration values below; jerk and
   low-level Kalman filtering are off. Rendering uses the same source phase for RGB,
   human, grippers, objects and robot. Source timestamps differ from execution time.
 
@@ -171,3 +171,37 @@ Those host-dependent paths must be configured for a different machine.
 
 상세 수치·녹화별 성공/실패·시간 측정은 [검증 기록](RETARGETING_VALIDATION.md)에 모았습니다.
 이전 수집 방식과 초기 로드맵은 [README 보존본](history/README_BEFORE_CLEANUP_20261019.md)에 있습니다.
+
+## Constrained path refinement (2026-10-20)
+
+The existing IK output is the initial guess for native Drake/SNOPT B-spline
+optimization. TCP position/orientation, joint interior bounds and collision
+clearance constrain the connecting curve. Only affected body/arm control points
+are optimized; the original lazy-base curve is fixed. All joint control points
+obey the existing bounds, which bounds the entire B-spline. Nonlinear constraints
+are sampled and independently checked at 240 Hz in source phase, then again on
+the exact time-parameterized curve and delivered samples. Failed phases are added
+for bounded refinement; exhausted retries reject the result. Sampled nonlinear
+checks are not a mathematical continuous-collision certificate.
+
+The original IK rows and raw recordings are retained. An exact spline artifact
+is shared by TOPPRA and validation; validation never rebuilds a different curve
+from the output points. The original renderer and CURRENT.json selection remain.
+Existing results can be reprocessed with standard.py refine NEW_NAME
+--source-result OLD_RESULT; this creates a new result and defaults to rendering.
+Jerk and Kalman remain off. The historical 13.35-second benchmark predates this
+stage and must not be presented as its end-to-end compute time.
+
+## Validation execution (2026-10-20 performance revision)
+
+Dense checks use four isolated spawned processes by default, bounded by CPU
+affinity. KUAVO_VALIDATION_WORKERS=1..4 can reduce concurrency. Ordered chunks
+retain every original sample and worker errors prevent acceptance. The two-slot
+dashboard compute queue is unchanged.
+
+Environment interpolation reuses identical source phases with the original
+two-keyframe Slerp/arithmetic. Scene updates additionally require the exact same
+base bytes and scene context. Refinement reuses only bit-identical coordinates
+at the same phase within one immutable-input run. The final dense stage still
+checks all original states. IK/geometry/PVA, tolerances, collision models,
+source timestamps, rendering and CURRENT.json selection are unchanged.

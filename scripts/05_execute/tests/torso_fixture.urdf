@@ -1,0 +1,38 @@
+<robot name="s63_torso_fixture"><joint name="base_to_joint" type="fixed">
+    <origin xyz="0.093 0 0.30085" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="base_to_joint" />
+    <axis xyz="0 1 0" />
+  </joint>
+  <joint name="knee_joint" type="revolute">
+    <origin xyz="0 0 0.1055" rpy="0 0 0" />
+    <parent link="base_to_joint" />
+    <child link="knee_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="0" upper="1.44862327915529" effort="668.53" velocity="25.33" />
+    <dynamics damping="0.0" friction="0.0" />
+  </joint>
+  <joint name="leg_joint" type="revolute">
+    <origin xyz="-0.46521 0 0.18325" rpy="0 0 0" />
+    <parent link="knee_link" />
+    <child link="leg_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="-2.80998009571087" upper="0.0" effort="668.53" velocity="25.33" />
+  </joint>
+  <joint name="waist_pitch_joint" type="revolute">
+    <origin xyz="0.48296 0 0.12941" rpy="0 0 0" />
+    <parent link="leg_link" />
+    <child link="waist_link" />
+    <axis xyz="0 1 0" />
+    <limit lower="-0.15707963267949" upper="2.9845130209103" effort="618.48" velocity="25.33" />
+    <dynamics damping="0.0" friction="0.0" />
+  </joint>
+  <joint name="waist_yaw_joint" type="revolute">
+    <origin xyz="0 0 0.25" rpy="0 0 0" />
+    <parent link="waist_link" />
+    <child link="waist_yaw_link" />
+    <axis xyz="0 0 1" />
+    <limit lower="-3.14159265358979" upper="3.14159265358979" effort="618.48" velocity="25.33" />
+    <dynamics damping="0.0" friction="0.0" />
+  </joint>
+  </robot>

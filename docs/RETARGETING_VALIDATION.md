@@ -62,3 +62,53 @@ prepared-input test. This is not a full success claim for arbitrary recordings.
 랙 63개 부분집합, 박스 공동 8코너, 3태그 12코너, 이상 태그/코너 제외,
 단일 추정 호환성과 회전된 오른쪽 태그의 단독 추정을 테스트했습니다.
 기존 prepared world와 CURRENT의 로봇 결과는 보존했으며, 보정은 새 world 준비부터 적용됩니다.
+
+## Constrained path regression (2026-10-20)
+
+User-approved native Drake/SNOPT constrained C2 B-spline refinement was tested
+against the three rejected replay trajectories without recomputing their accepted
+IK rows. Original input/source IK files and CURRENT.json remain unchanged.
+
+| Recording | Old invalid states | New invalid states | Final checked states | Duration |
+|---|---:|---:|---:|---:|
+| 13-42-32 | 14 | 0 | 7302 | 13.377087 s |
+| 13-43-02 | 9 | 0 | 6256 | 11.405622 s |
+| 13-43-31 | 19 | 0 | 5664 | 10.908699 s |
+
+All three passed independent FK/clearance, velocity/acceleration and MoveIt
+checks. Eleven focused numerical/acceptance tests passed. Exact curve artifacts
+round-trip with their first/second derivatives; historical natural-cubic artifacts
+keep their old geometry. New four-window previews were rendered and bound to the
+new trajectory hashes. Pure replay package construction passed for all three.
+The preview includes the full retimed endpoint, avoiding an artificial moving
+cut at 13 seconds. No robot motion or mode setter was executed. Jerk/Kalman off.
+Path refinement alone took approximately 25–34 seconds in these concurrent runs;
+this is additional offline computation, not replay duration.
+
+Detailed report: /home/lab6/warp-constrained-path-stage-20261020/REPORT.json.
+Previous source/catalogue backup:
+/home/lab6/Warp-review/backups/standard-before-constrained-path-20261020.
+
+## Validation performance regression (2026-10-20)
+
+Three matched concurrent offline runs, existing accepted IK reused, video excluded:
+
+| Recording | Prior geometry+timing+verification | Optimized | Prior dense check | Optimized dense check |
+|---|---:|---:|---:|---:|
+| 13-42-32 | 120.53 s | 48.84 s | 73.03 s | 18.18 s |
+| 13-43-02 | 103.92 s | 44.22 s | 62.44 s | 18.57 s |
+| 13-43-31 | 92.44 s | 40.64 s | 55.37 s | 16.72 s |
+
+All 19,222 per-state records and all source-knot checks matched exactly. P/V/A
+arrays were bit-identical. MoveIt inputs and result summaries matched exactly.
+All 42 originally rejected states remained rejected. Twenty focused unit tests
+passed; a malformed worker input propagated an exception without acceptance.
+
+A separate fresh 13-43-02 run, from prepared inputs through NEW IK and final
+MoveIt verification, passed in 54.58 seconds (IK 14.04 s), excluding raw input
+preparation and video rendering. That isolated run's dense check took 10.93 s.
+
+Original validated dashboard results/videos and CURRENT.json are retained because
+their trajectories are identical. New conversions use the optimized implementation.
+Detailed evidence: /home/lab6/warp-validation-speed-stage-20261020/.
+No robot commands or mode setters were executed; jerk/Kalman remain off.

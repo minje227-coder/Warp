@@ -21,5 +21,25 @@
     "sha256": "5c352b658dd941112e00a5de50b2c470f7712ed16f1792a1c727469a19da74c0"
   },
   "raw_input_preprocessing": "Separate take-specific stage; run accepts prepared reference/world/config. No implicit reuse of another recording.",
-  "previous_standard": "/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017"
+  "previous_standard": "/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017",
+  "trajectory_geometry": {
+    "revised_at": "2026-10-20 Asia/Seoul",
+    "method": "Drake SNOPT constrained C2 B-spline refinement before TOPPRA",
+    "base": "Original lazy-base spline held fixed",
+    "joint_bounds": "All control points inside the existing joint interior bounds",
+    "nonlinear_constraints": "TCP distance, body-downward cone, forward/camera hemispheres, bimanual orientation and collision; sampled constraints with independent adaptive refinement",
+    "source_ik": "Original source IK rows retained without rewriting",
+    "kalman": false,
+    "jerk": false
+  },
+  "validation_execution": {
+    "revised_at": "2026-10-20 Asia/Seoul",
+    "workers_default": 4,
+    "workers_environment": "KUAVO_VALIDATION_WORKERS=1..4",
+    "process_start_method": "spawn",
+    "sample_grids_unchanged": true,
+    "criteria_unchanged": true,
+    "interpolation": "Same two-keyframe Slerp with exact phase/context/base cache keys",
+    "refinement_cache": "Reuse only bit-identical coordinates at the same source phase within one run"
+  }
 }

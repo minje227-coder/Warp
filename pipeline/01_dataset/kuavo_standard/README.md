@@ -35,3 +35,50 @@ bash scripts/02_convert/convert_episode_standard.sh /path/to/episode
 - [실행 방법·입력 계약·현재 정책](../../../docs/RETARGETING_STANDARD.md)
 - [검증 결과·측정 범위](../../../docs/RETARGETING_VALIDATION.md)
 - [프로젝트 시작 안내](../../../README.md)
+
+## Constrained path revision (2026-10-20)
+
+The user-approved path stage is now native Drake/SNOPT constrained C2 B-spline
+refinement between the existing IK and TOPPRA stages. The base curve, IK reference
+rows, source timestamps, tolerance thresholds, collision model, V/A limits,
+renderer and CURRENT.json selection are preserved. The optimizer bounds every
+joint control point and constrains TCP position/orientation and collision at
+sampled phases. Independent 240-Hz source-phase checks and the existing exact
+curve execution-time/MoveIt checks remain mandatory; discovered failures feed
+back into refinement. Finite retry exhaustion rejects the result.
+
+`pipeline/path_tools.py` serializes the exact optimized curve for both TOPPRA and
+verification. It also reads historical natural-cubic parameterizations without
+changing their geometry. Historical results are not rewritten. To reprocess
+previously solved IK into a new result without running IK again:
+
+```bash
+/home/lab6/Warp/.venv-retarget/bin/python standard.py refine NEW_RUN_NAME \
+  --source-result /absolute/path/to/previous/result
+```
+
+Four-window rendering is the default for this command; `--no-render` explicitly
+skips it. This is offline computation and sends no robot commands. The historical
+13.35-second IK+timing benchmark does not include this new path stage.
+
+## Validation performance revision (2026-10-20)
+
+Dense checking uses up to four isolated spawned processes per trajectory. Each
+process owns its Drake scene and model cache. Ordered chunk merging preserves
+sample indices, coverage, all original pose/joint/collision checks and MoveIt
+input. Worker exceptions propagate and prevent acceptance. Set
+KUAVO_VALIDATION_WORKERS=1..4 to lower concurrency; CPU affinity also caps it.
+
+Repeated environment interpolation reuses the exact same two-keyframe Slerp and
+arithmetic. A scene update is reused only for the identical scene context, base
+bytes and source phase. Refinement reuses a check only for bit-identical
+coordinates at the same source phase during that immutable-input run. The final
+dense pass still checks every state and keeps the existing source/execution grids.
+The IK solver, curve optimizer, P/V/A output, tolerances and renderer are unchanged.
+
+Three matched offline regressions reduced geometry+retiming+validation from
+120.53/103.92/92.44 seconds to 48.84/44.22/40.64 seconds. Both sets were three
+concurrent runs on lab6; these timings exclude IK and video. All 19,222 sample
+records and the source-knot checks matched exactly; P/V/A arrays, MoveIt inputs
+and MoveIt summaries were also identical. All 42 previously rejected sample
+states remained rejected. Twenty focused unit tests passed.
