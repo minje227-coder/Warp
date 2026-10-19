@@ -38,7 +38,12 @@ public final class WarpRawRecorder {
         MediaCodec codec; MediaMuxer muxer; Surface surface;
         BufferedWriter frames, encoded, tracking, events;
         int track = -1, sensorFrames, encodedFrames; volatile long trackingSamples;
+        volatile double measuredQuestFps=-1;
+        volatile long lastFrameElapsedNs;
+        long fpsWindowStartNs;
+        int fpsWindowCount;
         boolean muxing, repeatingStarted, wasRecording, finalizeStarted;
+        WarpUsbCamera external; volatile boolean externalClosed=true;
         volatile boolean stopping, cameraClosed, codecClosed, trackingClosed;
         volatile String failure = ""; volatile boolean finalized;
         long created = System.currentTimeMillis(); JSONObject calibration;
@@ -58,7 +63,9 @@ public final class WarpRawRecorder {
     private static Handler handler(String name) { HandlerThread t=new HandlerThread(name,android.os.Process.THREAD_PRIORITY_BACKGROUND);t.start();return new Handler(t.getLooper()); }
     public void setServerUrl(String value) { serverUrl=value; }
     public String status() {
-        try { return new JSONObject().put("state",state).put("error",error).put("pending",pending())
+        Episode snapshot=active;
+        double questFps=snapshot==null?-1:snapshot.lastFrameElapsedNs>0&&SystemClock.elapsedRealtimeNanos()-snapshot.lastFrameElapsedNs>1000000000L?0:snapshot.measuredQuestFps;
+        try { return new JSONObject().put("quest_source_fps",questFps).put("state",state).put("error",error).put("pending",pending())
             .put("capacity",CAPACITY).put("upload_state",uploadState).put("progress",progress)
             .put("free_bytes",root.getUsableSpace()).toString(); } catch(Exception e) {return "{}";}
     }
@@ -117,6 +124,22 @@ public final class WarpRawRecorder {
     }
     private void open(Episode e) {
         try {
+            if(e.stopping){e.cameraClosed=true;finishEncoder(e);return;}
+            e.external=WarpUsbCamera.openIfAttached(activity,e.dir);
+            if(e.external!=null){
+                e.externalClosed=false;
+                e.external.start(usbError->{
+                    synchronized(WarpRawRecorder.this) {
+                        if(!usbError.isEmpty()){
+                            if(e.failure.isEmpty())e.failure=usbError;
+                            if(!e.stopping)fail(e,new IOException(usbError));
+                        }
+                        e.externalClosed=true;
+                        maybeSeal(e);
+                    }
+                });
+                if(e.stopping)e.external.stop();
+            }
             CameraManager m=(CameraManager)activity.getSystemService(Activity.CAMERA_SERVICE);
             String chosen=null; CameraCharacteristics c=null;
             for(String id:m.getCameraIdList()) {
@@ -187,6 +210,18 @@ public final class WarpRawRecorder {
                                                     .put("crop_region",String.valueOf(result.get(CaptureResult.SCALER_CROP_REGION)))
                                                     .put("exposure_ns",result.get(CaptureResult.SENSOR_EXPOSURE_TIME));
                                                 line(e.frames,f);e.sensorFrames++;
+                                                e.lastFrameElapsedNs=elapsed;
+                                                Long stamp=result.get(CaptureResult.SENSOR_TIMESTAMP);
+                                                if(stamp!=null){
+                                                    if(e.fpsWindowStartNs==0||stamp<=e.fpsWindowStartNs){e.fpsWindowStartNs=stamp;e.fpsWindowCount=0;e.measuredQuestFps=-1;}
+                                                    else {
+                                                        e.fpsWindowCount++;
+                                                        if(stamp-e.fpsWindowStartNs>=500000000L){
+                                                            e.measuredQuestFps=e.fpsWindowCount*1e9/(stamp-e.fpsWindowStartNs);
+                                                            e.fpsWindowStartNs=stamp;e.fpsWindowCount=0;
+                                                        }
+                                                    }
+                                                }
                                                 if(root.getUsableSpace()<MIN_FREE)fail(e,new IOException("Storage low during capture"));
                                             }catch(Exception ex){fail(e,ex);}
                                         }
@@ -222,6 +257,7 @@ public final class WarpRawRecorder {
     public synchronized void stop() {
         Episode e=active;if(e==null||e.stopping)return;
         event("stop");e.stopping=true;state="Saving";
+        if(e.external!=null)e.external.stop();
         trackingHandler.post(()->{try{e.tracking.close();e.events.close();}catch(Exception ex){e.failure=ex.toString();}e.trackingClosed=true;maybeSeal(e);});
         cameraHandler.post(()->{
             try{
@@ -245,7 +281,7 @@ public final class WarpRawRecorder {
         e.codecClosed=true;maybeSeal(e);
     }
     private synchronized void maybeSeal(Episode e) {
-        if(!e.stopping||!e.cameraClosed||!e.codecClosed||!e.trackingClosed||e.finalizeStarted)return;
+        if(!e.stopping||!e.cameraClosed||!e.codecClosed||!e.trackingClosed||!e.externalClosed||e.finalizeStarted)return;
         e.finalizeStarted=true;
         try{e.frames.close();}catch(Exception ex){e.failure=ex.toString();}
         e.finalized=true;if(active==e){active=null;recordingFinished(e);}
@@ -262,13 +298,14 @@ public final class WarpRawRecorder {
                 .put("width",1280).put("height",1280).put("requested_fps",30).put("codec","video/avc").put("bitrate",20000000)
                 .put("sensor_frames",e.sensorFrames).put("encoded_frames",e.encodedFrames).put("tracking_samples",e.trackingSamples)
                 .put("hardware_synchronized",false).put("clock_alignment","unverified_offline_required")
+                .put("external_camera",new JSONObject().put("enabled",e.external!=null).put("schema_version",1).put("clock_alignment","same_host_arrival_timestamps_exposure_alignment_unverified"))
                 .put("camera_pose_source","camera_extrinsics_plus_timestamped_hmd_device_pose_requires_calibration")
                 .put("mount_mode",e.mountMode)
                 .put("hmd_pose_role",e.mountMode.equals("neck")?"neck_mounted_device":"head_mounted_device")
                 .put("mount_calibration","unverified")
                 .put("body_pose_validation",e.mountMode.equals("neck")?"unverified_neck_mount":"meta_runtime_accuracy_unverified")
                 .put("proximity_policy",e.mountMode.equals("neck")?"periodic_close_override_until_head_or_20min_idle":"normal_sensor")
-                .put("app_version","3.0.6-raw").put("files",files);
+                .put("app_version","3.0.11-raw").put("files",files);
             writeAtomic(new File(e.dir,"manifest.json"),manifest.toString());
         }catch(Exception ex){try{writeAtomic(new File(e.dir,"interrupted.json"),new JSONObject().put("reason",ex.toString()).toString());}catch(Exception ignored){}}});
     }

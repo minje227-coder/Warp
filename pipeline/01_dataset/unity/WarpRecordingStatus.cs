@@ -7,7 +7,8 @@ using UnityEngine;
 public class WarpRecordingStatus : MonoBehaviour
 {
     public WarpCaptureBridge capture;
-    TMP_Text label, uploadLabel, countdownLabel, mountLabel;
+    TMP_Text label, uploadLabel, countdownLabel, mountLabel, externalCameraLabel;
+    TMP_FontAsset koreanFont;
     Canvas hud;
     string state = "Preparing…";
     double recordingStart;
@@ -58,6 +59,15 @@ public class WarpRecordingStatus : MonoBehaviour
         mountLabel.raycastTarget = false;
         var mountRect = mount.GetComponent<RectTransform>();
         mountRect.sizeDelta = new Vector2(360, 36); mountRect.anchoredPosition = new Vector2(0, -114);
+        var externalStatus = new GameObject("ExternalCameraStatus", typeof(RectTransform), typeof(TextMeshProUGUI));
+        externalStatus.transform.SetParent(panel.transform, false);
+        externalCameraLabel = externalStatus.GetComponent<TextMeshProUGUI>();
+        externalCameraLabel.fontSize = 18; externalCameraLabel.alignment = TextAlignmentOptions.Center;
+        externalCameraLabel.raycastTarget = false;
+        var externalStatusRect = externalStatus.GetComponent<RectTransform>();
+        externalStatusRect.sizeDelta = new Vector2(460, 60); externalStatusRect.anchoredPosition = new Vector2(0, -168);
+        var font = Resources.Load<Font>("WarpKorean");
+        if (font != null) { koreanFont = TMP_FontAsset.CreateFontAsset(font); externalCameraLabel.font = koreanFont; }
         SetCountdown(0);
         body = capture.controller.bodyPoseProvider;
         tracker = FindFirstObjectByType<QuestAprilTagTracker>(FindObjectsInactive.Include);
@@ -117,6 +127,12 @@ public class WarpRecordingStatus : MonoBehaviour
             mountLabel.text = $"Mount: {mode} | {action}";
             mountLabel.color = capture.IsNeckMount ? new Color(0.3f, 0.9f, 1f) : Color.white;
         }
+        if (externalCameraLabel != null) {
+            string externalFps = capture.ExternalSourceFps >= 0 ? capture.ExternalSourceFps.ToString("F1") : "--";
+            string questFps = capture.QuestSourceFps >= 0 ? capture.QuestSourceFps.ToString("F1") : "--";
+            externalCameraLabel.text = capture.ExternalCameraText + " · " + externalFps + " FPS\nQuest: " + questFps + " FPS";
+            externalCameraLabel.color = capture.ExternalCameraConnected ? new Color(0.3f, 0.9f, 1f) : Color.gray;
+        }
         if (!clean) return;
         if (Time.realtimeSinceStartupAsDouble < nextCleanCheck) return;
         nextCleanCheck = Time.realtimeSinceStartupAsDouble + 1;
@@ -136,5 +152,12 @@ public class WarpRecordingStatus : MonoBehaviour
         }
     }
 
-    void OnDestroy() { SetClean(false); if (hud != null) Destroy(hud.gameObject); }
+    void OnDestroy() {
+        SetClean(false); if (hud != null) Destroy(hud.gameObject);
+        if (koreanFont != null) {
+            foreach (var texture in koreanFont.atlasTextures) if (texture != null) Destroy(texture);
+            if (koreanFont.material != null) Destroy(koreanFont.material);
+            Destroy(koreanFont);
+        }
+    }
 }

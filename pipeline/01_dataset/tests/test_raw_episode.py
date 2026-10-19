@@ -1,3 +1,4 @@
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -11,7 +12,7 @@ from raw_episode import FILES, digest, import_raw_episode
 
 class RawEpisodeTests(unittest.TestCase):
     def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
+        self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name).resolve()
         self.src=self.root/'source';self.src.mkdir();self.out=self.root/'out'
         self.episode_id='a'*32
         import av,numpy as np
@@ -22,7 +23,7 @@ class RawEpisodeTests(unittest.TestCase):
                 for packet in s.encode(f):v.mux(packet)
             for packet in s.encode():v.mux(packet)
         for name in FILES-{'camera.mp4'}:(self.src/name).write_text('{}\n')
-        self.manifest={'schema_version':3,'episode_id':self.episode_id,'width':1280,'height':1280,'sensor_frames':2,'encoded_frames':2,'tracking_samples':1,
+        self.manifest={'created_unix_ms':int(datetime.fromisoformat('2026-10-14T23:55:06.214+09:00').timestamp()*1000),'schema_version':3,'episode_id':self.episode_id,'width':1280,'height':1280,'sensor_frames':2,'encoded_frames':2,'tracking_samples':1,
                        'files':{n:{'bytes':(self.src/n).stat().st_size,'sha256':digest(self.src/n)} for n in FILES}}
         self.archive=self.root/'upload.zip';self.pack()
     def tearDown(self):self.tmp.cleanup()
@@ -35,19 +36,57 @@ class RawEpisodeTests(unittest.TestCase):
     def test_original_video_preserved_without_resampling(self):
         r=self.ingest();p=Path(r['episode']);self.assertEqual(digest(p/'camera.mp4'),digest(self.src/'camera.mp4'));self.assertFalse(r['dataset_ready']);self.assertEqual(r['processing_state'],'pending')
         self.assertEqual(p.parent.parent,self.out)
-        self.assertEqual(p.name,self.episode_id)
+        self.assertEqual(p.name,'23-55-06_'+self.episode_id)
+        self.assertEqual(p.parent.name,'2026-10-14')
+        self.assertEqual(json.loads((p/'manifest.json').read_text()),self.manifest)
         self.assertFalse((self.out/'raw').exists())
     def test_retry_returns_same_episode(self):
         first=self.ingest();self.assertEqual(first,self.ingest());self.assertEqual(len(list(self.out.glob('*/*/manifest.json'))),1)
     def test_receipt_commit_crash_recovery(self):
         first=self.ingest();(self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink();self.assertEqual(first,self.ingest())
     def test_legacy_receipt_crash_recovery(self):
-        first=self.ingest();folder=Path(first['episode']);legacy=self.out/'raw'/folder.parent.name/folder.name
+        first=self.ingest();folder=Path(first['episode']);legacy=self.out/'raw'/folder.parent.name/self.episode_id
         legacy.parent.mkdir(parents=True);folder.rename(legacy)
         first['episode']=str(legacy);(legacy/'transfer.json').write_text(json.dumps(first))
         (self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink()
         self.assertEqual(first,self.ingest())
         self.assertFalse(folder.exists())
+    def test_capture_date_and_time_are_korean_not_upload_time(self):
+        self.manifest['created_unix_ms']=int(datetime.fromisoformat('2026-10-14T15:00:01+00:00').timestamp()*1000)
+        self.pack();r=self.ingest();p=Path(r['episode'])
+        self.assertEqual(p.parent.name,'2026-10-15')
+        self.assertEqual(p.name,'00-00-01_'+self.episode_id)
+    def test_same_second_keeps_unique_uuid(self):
+        first=self.ingest();self.episode_id='b'*32;self.manifest['episode_id']=self.episode_id;self.pack();second=self.ingest()
+        self.assertNotEqual(first['episode'],second['episode'])
+        self.assertEqual(Path(second['episode']).name,'23-55-06_'+'b'*32)
+    def test_old_uuid_folder_receipt_crash_recovery(self):
+        first=self.ingest();folder=Path(first['episode']);old=folder.with_name(self.episode_id);folder.rename(old)
+        first['episode']=str(old);(old/'transfer.json').write_text(json.dumps(first))
+        (self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink()
+        self.assertEqual(first,self.ingest())
+        self.assertFalse(folder.exists())
+    def test_prefixed_legacy_folder_receipt_crash_recovery(self):
+        first=self.ingest();folder=Path(first['episode']);legacy=self.out/'raw'/folder.parent.name/folder.name
+        legacy.parent.mkdir(parents=True);folder.rename(legacy)
+        first['episode']=str(legacy);(legacy/'transfer.json').write_text(json.dumps(first))
+        (self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink()
+        self.assertEqual(first,self.ingest())
+    def test_duplicate_uuid_across_old_and_new_paths_rejected(self):
+        first=self.ingest();folder=Path(first['episode']);other=folder.with_name(self.episode_id)
+        shutil.copytree(folder,other);(self.out/'.raw_uploads'/(self.episode_id+'.json')).unlink()
+        with self.assertRaisesRegex(ValueError,'Duplicate raw episode identity'):self.ingest()
+    def test_invalid_recording_timestamp_rejected_without_receipt(self):
+        for value in (None,True,-1,'bad',1e20,10**100):
+            with self.subTest(value=value):
+                self.manifest['created_unix_ms']=value;self.pack()
+                with self.assertRaisesRegex(ValueError,'recording start timestamp'):self.ingest()
+                self.assertFalse((self.out/'.raw_uploads'/(self.episode_id+'.json')).exists())
+    def test_existing_destination_is_preserved(self):
+        target=self.out/'2026-10-14'/('23-55-06_'+self.episode_id);target.mkdir(parents=True)
+        (target/'original').write_text('keep')
+        with self.assertRaisesRegex(ValueError,'already exists'):self.ingest()
+        self.assertEqual((target/'original').read_text(),'keep')
     def test_same_id_different_bytes_rejected(self):
         self.ingest();self.manifest['note']='different';self.pack()
         with self.assertRaisesRegex(ValueError,'different bytes'):self.ingest()

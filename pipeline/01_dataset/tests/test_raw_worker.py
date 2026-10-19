@@ -10,8 +10,18 @@ spec=importlib.util.spec_from_file_location('raw_worker',HERE/'raw_processing_wo
 ID='a'*32
 
 class WorkerTest(unittest.TestCase):
-    def source(self,root,schema=3,legacy=False):
-        src=(root/'raw' if legacy else root)/'2026-10-13'/ID;src.mkdir(parents=True)
+    def test_receiver_staging_is_ignored_until_atomic_publish(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);final=self.source(root,prefixed=True)
+            staged=final.with_name(final.name+'.partial');final.rename(staged)
+            self.assertEqual(m.run_once(root,lambda *a,**k:self.fail('Receiver staging must not be processed')),0)
+            self.assertFalse((root/'.raw_processing'/(ID+'.json')).exists())
+            staged.rename(final)
+            self.assertEqual(m.run_once(root,self.processor),1)
+            job=json.loads((root/'.raw_processing'/(ID+'.json')).read_text())
+            self.assertEqual(job['source'],str(final.resolve()))
+    def source(self,root,schema=3,legacy=False,prefixed=False):
+        src=(root/'raw' if legacy else root)/'2026-10-13'/('09-10-11_'+ID if prefixed else ID);src.mkdir(parents=True)
         (src/'manifest.json').write_text(json.dumps({'schema_version':schema,'episode_id':ID}))
         (src/'transfer.json').write_text(json.dumps({'state':'saved'}));return src
     def processor(self,source,out,**settings):
@@ -25,6 +35,14 @@ class WorkerTest(unittest.TestCase):
             self.assertTrue((src/'processed'/'quality.json').is_file())
             self.assertFalse((root/'derived').exists())
             self.assertEqual(json.loads((root/'.raw_processing'/(ID+'.json')).read_text())['state'],'complete')
+    def test_time_prefixed_folder_uses_uuid_job_and_nested_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);src=self.source(root,prefixed=True)
+            self.assertEqual(m.run_once(root,self.processor),1)
+            self.assertTrue((src/'processed'/'quality.json').is_file())
+            job=json.loads((root/'.raw_processing'/(ID+'.json')).read_text())
+            self.assertEqual(job['source'],str(src.resolve()));self.assertEqual(job['output'],str((src/'processed').resolve()))
+            self.assertEqual(m.run_once(root,lambda *a,**k:self.fail('Already processed')),0)
     def test_crash_recovery_cleans_only_partial_derived(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);src=self.source(root);partial=src/'processed.partial';partial.mkdir();(partial/'unfinished').write_text('x')

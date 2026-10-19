@@ -217,6 +217,11 @@ def process(source, destination, offset_ns=None, max_bracket_ms=50, tag_size_m=N
         'apriltag_detections':detections,'camera_pose_status':'output_intrinsics_verified' if verified else 'needs_camera_calibration','tracking_coverage':coverage(tracking),
         'alignment_valid_frames':sum(r['valid'] for r in aligned),'alignment_reasons':dict(Counter(r['reason'] for r in aligned)),
         'notes':['Container normalization tolerates 1ms residual; longer episodes may need quantization-aware validation, without fabricated corrections.','Hand coverage excludes multi-joint all-zero geometry even if SDK reports valid; raw validity remains preserved.','No repeated-frame padding or fixed-FPS reconstruction.','Static scenes cannot establish image duplication; PTS and exposure provenance are checked.','Explicit offset must be validated independently, including drift; camera-to-world extrinsics remain unverified.']}
+    if manifest.get('external_camera', {}).get('enabled'):
+        from external_camera import process_external_camera, align_external_frames, export_paired_videos
+        qc['external_camera'] = process_external_camera(source, destination)
+        qc['external_camera']['timestep_matching'] = align_external_frames(source, destination, read_jsonl(destination/'decoded_frames.jsonl'), sensor, calibration)
+        qc['external_camera']['paired_export'] = export_paired_videos(source, destination, read_jsonl(destination/'decoded_frames.jsonl'), sensor, calibration)
     write_json(destination/'quality.json',qc)
     provenance=json.loads((destination/'processing_manifest.json').read_text());provenance['state']='complete';provenance['outputs']={p.name:sha256(p) for p in destination.iterdir() if p.name!='processing_manifest.json'}
     write_json(destination/'processing_manifest.json',provenance)

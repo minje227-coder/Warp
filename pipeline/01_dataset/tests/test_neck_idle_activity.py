@@ -11,12 +11,18 @@ import tempfile
 import unittest
 
 STUBS = {
+'android/content/Context.java': 'package android.content; public class Context {public static final int RECEIVER_NOT_EXPORTED=4;}',
+'android/content/BroadcastReceiver.java': 'package android.content; public abstract class BroadcastReceiver {public abstract void onReceive(Context c,Intent i);}',
+'android/content/IntentFilter.java': 'package android.content; public class IntentFilter {public IntentFilter(String s){}}',
+'android/hardware/usb/UsbManager.java': 'package android.hardware.usb; public class UsbManager {public static final String ACTION_USB_DEVICE_ATTACHED="attached";}',
+'android/content/pm/PackageManager.java': 'package android.content.pm; public class PackageManager {public static final int PERMISSION_GRANTED=0;}',
+'dev/warp/capture/WarpUsbCamera.java': 'package dev.warp.capture; public class WarpUsbCamera {public static void requestAttachedAccess(Object activity){}}',
 'android/view/KeyEvent.java': '''package android.view; public class KeyEvent {
 public static final int KEYCODE_VOLUME_UP=24,KEYCODE_VOLUME_DOWN=25,ACTION_DOWN=0,ACTION_UP=1;
 public int getKeyCode(){return 0;} public int getAction(){return 0;} public int getRepeatCount(){return 0;}}''',
 'android/content/Intent.java': '''package android.content; public class Intent {
 public static final int FLAG_INCLUDE_STOPPED_PACKAGES=32; public String action; public int duration;
-public Intent(String a){action=a;} public Intent addFlags(int f){return this;}
+public String getAction(){return action;} public Intent(String a){action=a;} public Intent addFlags(int f){return this;}
 public Intent putExtra(String k,int v){duration=v;return this;}}''',
 'android/content/SharedPreferences.java': '''package android.content; public class SharedPreferences {
 public static boolean value; public boolean getBoolean(String k,boolean d){return value;}
@@ -44,6 +50,8 @@ public static final int MODE_PRIVATE=0; public static List<Intent> messages=new 
 public boolean finishing,destroyed;
 protected void onCreate(Bundle b){} protected void onStart(){} protected void onStop(){}
 protected void onDestroy(){destroyed=true;}
+public void onRequestPermissionsResult(int code,String[] permissions,int[] results){}
+public void registerReceiver(BroadcastReceiver r,IntentFilter f,int flags){} public void unregisterReceiver(BroadcastReceiver r){}
 public boolean isFinishing(){return finishing;} public boolean isDestroyed(){return destroyed;}
 public SharedPreferences getSharedPreferences(String k,int m){return new SharedPreferences();}
 public void runOnUiThread(Runnable r){r.run();} public void sendBroadcast(Intent i){messages.add(i);}
@@ -109,6 +117,8 @@ class NeckIdleActivityTests(unittest.TestCase):
         java = str(Path(java_home) / 'bin/java') if java_home else shutil.which('java')
         if not javac or not java:
             self.skipTest('Java runtime unavailable; set WARP_JAVA_HOME')
+        if subprocess.run([javac, '-version'], capture_output=True, timeout=10).returncode:
+            self.skipTest('Java compiler unavailable; set WARP_JAVA_HOME')
         production = Path(__file__).resolve().parents[1] / 'unity/WarpVolumeActivity.java'
         with tempfile.TemporaryDirectory(prefix='warp-neck-idle-test-') as tmp:
             root = Path(tmp)
@@ -117,7 +127,7 @@ class NeckIdleActivityTests(unittest.TestCase):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(source)
             dest = root / 'dev/warp/capture/WarpVolumeActivity.java'
-            dest.parent.mkdir(parents=True)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(production, dest)
             subprocess.run([javac, '-d', str(root / 'classes'), *map(str, root.rglob('*.java'))], check=True, capture_output=True, text=True, timeout=30)
             result = subprocess.run([java, '-cp', str(root / 'classes'), 'NeckIdleSmoke'], check=True, capture_output=True, text=True, timeout=30)

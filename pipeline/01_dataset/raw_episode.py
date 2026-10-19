@@ -9,9 +9,12 @@ import stat
 import threading
 import zipfile
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 FILES = {'camera.mp4', 'camera_frames.jsonl', 'encoded_frames.jsonl',
          'tracking.jsonl', 'events.jsonl', 'calibration.json'}
+USB_FILES = {'external_camera.mjpeg', 'external_camera_frames.jsonl', 'external_camera.json'}
+USB_YUYV_FILES = {'external_camera.yuyv', 'external_camera_frames.jsonl', 'external_camera.json'}
 LOCK = threading.Lock()
 MAX_EXPANDED_BYTES = 20 * 1024**3
 
@@ -58,8 +61,13 @@ def import_raw_episode(source, out_root, upload_id, checksum):
                 raise ValueError('Confirmed PC episode missing; do not acknowledge')
             return r
         # Recover a crash after durable episode commit but before receipt commit.
-        matches = list(out_root.glob('*/' + upload_id + '/transfer.json'))
-        matches += list((out_root / 'raw').glob('*/' + upload_id + '/transfer.json'))
+        matches = []
+        for archive_root in (out_root, out_root / 'raw'):
+            for leaf in (upload_id, '*_' + upload_id):
+                matches.extend(archive_root.glob('*/' + leaf + '/transfer.json'))
+        # Restrict recovery to the supported old and new storage layouts.
+        leaf_pattern = r'(?:[01][0-9]|2[0-3])-[0-5][0-9]-[0-5][0-9]_' + upload_id
+        matches = [p for p in matches if p.parent.name == upload_id or re.fullmatch(leaf_pattern, p.parent.name)]
         if matches:
             if len(matches) != 1:
                 raise ValueError('Duplicate raw episode identity')
@@ -71,7 +79,7 @@ def import_raw_episode(source, out_root, upload_id, checksum):
         with zipfile.ZipFile(source) as archive:
             entries = archive.infolist()
             names = [e.filename for e in entries]
-            if len(names) != len(set(names)) or set(names) != FILES | {'manifest.json'}:
+            if len(names) != len(set(names)) or not FILES | {'manifest.json'} <= set(names) or not set(names) <= FILES | USB_FILES | USB_YUYV_FILES | {'manifest.json'}:
                 raise ValueError('Unexpected/duplicate archive entries')
             if sum(e.file_size for e in entries) > MAX_EXPANDED_BYTES:
                 raise ValueError('Archive exceeds raw episode size limit')
@@ -82,15 +90,33 @@ def import_raw_episode(source, out_root, upload_id, checksum):
             manifest = json.loads(archive.read('manifest.json'))
             if manifest.get('schema_version') != 3 or manifest.get('episode_id') != upload_id:
                 raise ValueError('Raw manifest identity/schema mismatch')
-            if set(manifest.get('files', {})) != FILES:
+            external = manifest.get('external_camera', {})
+            if not isinstance(external, dict) or type(external.get('enabled', False)) is not bool:
+                raise ValueError('Invalid external camera declaration')
+            usb_files = USB_FILES
+            if external.get('enabled') and 'external_camera.yuyv' in names:
+                usb_files = USB_YUYV_FILES
+            expected_files = FILES | usb_files if external.get('enabled') else FILES
+            if set(manifest.get('files', {})) != expected_files or set(names) != expected_files | {'manifest.json'}:
                 raise ValueError('Missing source provenance files')
             if (manifest.get('width'), manifest.get('height')) != (1280, 1280):
                 raise ValueError('Unexpected camera resolution')
             if any(manifest.get(k, 0) <= 0 for k in ('sensor_frames','encoded_frames','tracking_samples')):
                 raise ValueError('Missing camera/tracking observations')
-            folder = out_root / datetime.now().strftime('%Y-%m-%d') / upload_id
+            created_ms = manifest.get('created_unix_ms')
+            if type(created_ms) is not int or created_ms <= 0:
+                raise ValueError('Invalid recording start timestamp')
+            try:
+                started = datetime.fromtimestamp(created_ms / 1000, ZoneInfo('Asia/Seoul'))
+            except (ValueError, OverflowError, OSError) as exc:
+                raise ValueError('Invalid recording start timestamp') from exc
+            # Display names carry capture time; UUIDs remain transfer/job identities.
+            leaf = started.strftime('%H-%M-%S') + '_' + upload_id
+            folder = out_root / started.strftime('%Y-%m-%d') / leaf
+            if folder.exists():
+                raise ValueError('Episode destination already exists; preserved')
             folder.parent.mkdir(parents=True, exist_ok=True)
-            staging = folder.with_name(upload_id + '.partial')
+            staging = folder.with_name(folder.name + '.partial')
             if staging.exists():
                 shutil.rmtree(staging)  # Receiver-owned incomplete import only.
             staging.mkdir()
@@ -113,6 +139,9 @@ def import_raw_episode(source, out_root, upload_id, checksum):
                     stream = video.streams.video[0]
                     if (stream.width, stream.height) != (1280,1280):
                         raise ValueError('Actual video dimensions differ from manifest')
+                if external.get('enabled'):
+                    from external_camera import validate_external_camera
+                    validate_external_camera(staging)
                 r = {'state':'saved', 'upload_id':upload_id, 'sha256':checksum,
                      'episode':str(folder), 'processing_state':'pending',
                      'source_preserved':True, 'dataset_ready':False}

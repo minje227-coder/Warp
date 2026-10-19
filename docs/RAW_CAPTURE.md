@@ -197,3 +197,38 @@ runs through temporary Unity/VR focus loss, and Unity synchronizes its HUD
 and persisted mode to Android. Loading persisted NECK on a new Activity
 starts a new idle period. The six-second lease still limits process-crash
 residue. No tracking calibration or data-format changes are implied.
+
+## External USB cameras and D435 restart fix (3.0.11)
+
+The capture app supports an optional external UVC camera alongside the Quest
+camera. Supported transports are MJPEG over isochronous USB and D435/D435i RGB
+YUY2 over bulk USB. Depth and infrared interfaces are not selected. The external
+camera uses its largest advertised RGB mode at 30 fps: the tested D435 exposes
+1920x1080 on USB 3 and 640x480 on USB 2. Lower-rate modes are not silently used
+to satisfy a larger resolution request.
+
+Idle preview and recording own the USB connection sequentially. Recording waits
+for preview shutdown before opening its own stream. Version 3.0.11 clears the
+bulk endpoint before a new probe/commit and after the native worker has canceled
+and reaped outstanding transfers. This supplies the bulk-stream stop operation
+that SET_INTERFACE(0) does not provide, fixing `bulk_status_-71` when a working
+1080p preview transitions into recording. Shutdown failures remain explicit.
+The native transport retains complete frames with their original arrival times;
+preview JPEG conversion does not change recorded YUY2 pixels.
+
+External files are `external_camera.json`, `external_camera_frames.jsonl`, and
+either `external_camera.yuyv` or `external_camera.mjpeg`. The receiver validates
+the declared file set and checksums. Processing exports the external video and
+timestamp provenance; paired exports use original observations without padding.
+External arrival times are not exposure timestamps. Hardware synchronization,
+cross-camera calibration, and body-tracking accuracy are not established by
+these capture tests.
+
+On Quest 3 with D435 USB 3, two consecutive main-app recordings completed with
+140 and 142 external 1080p frames, zero payload errors, and 152 and 155 Quest
+frames respectively. Both videos in each take decoded fully and matched their
+manifest SHA-256 values. These are short recording/restart tests, not a
+long-duration or server-upload qualification. The final release build only
+updates the recording version label after these hardware runs; the tested
+camera implementation is unchanged. Release assets include exact APK and
+camera-source hashes and verification details.

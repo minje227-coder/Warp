@@ -15,6 +15,11 @@ public class WarpCaptureBridge : MonoBehaviour {
     public bool CanChangeMountMode => !Armed && !Starting && !Draining;
     string recordingMountMode = "head";
     public string UploadText { get; private set; } = "Upload pending · 0/30";
+    double nativeQuestFps=-1;
+    public double QuestSourceFps => Armed?nativeQuestFps:camera!=null?camera.QuestPreviewFps:-1;
+    public double ExternalSourceFps => camera!=null?camera.ExternalSourceFps:-1;
+    public string ExternalCameraText => camera!=null?camera.ExternalCameraStatus:"외부 카메라: 확인 중";
+    public bool ExternalCameraConnected => camera!=null&&camera.ExternalCameraConnected;
     public string TrackingText { get; private set; } = "";
     public string UploadDetail { get; private set; } = "";
     AndroidJavaObject recorder;
@@ -29,7 +34,7 @@ public class WarpCaptureBridge : MonoBehaviour {
     bool hadBody;
     bool nativeStartSubmitted;
     int startGeneration;
-    [Serializable] class NativeStatus { public string state,error,upload_state;public int pending,capacity;public double progress;public long free_bytes; }
+    [Serializable] class NativeStatus { public string state,error,upload_state;public int pending,capacity;public double progress,quest_source_fps;public long free_bytes; }
     [Serializable] class Bone { public int id;public string name;public Vector3 position;public Quaternion rotation; }
     [Serializable] class Sample {
         public string kind,coordinate_frame,time_source,mount_mode,hmd_pose_role;
@@ -121,7 +126,7 @@ public class WarpCaptureBridge : MonoBehaviour {
         camera.ReleasePreview();
         // PCA must release its Camera2 device before native capture owns it.
         double deadline=Time.realtimeSinceStartupAsDouble+2;
-        while(camera.cameraAccess!=null&&camera.cameraAccess.IsPlaying&&Time.realtimeSinceStartupAsDouble<deadline)yield return null;
+        while(!camera.PreviewReleased&&Time.realtimeSinceStartupAsDouble<deadline)yield return null;
         yield return new WaitForSecondsRealtime(0.2f);
         if(generation!=startGeneration||!Starting)yield break;
         // Keep the preview released and show only digits before native capture starts.
@@ -131,6 +136,10 @@ public class WarpCaptureBridge : MonoBehaviour {
             if(generation!=startGeneration||!Starting)yield break;
         }
         status.SetCountdown(0);
+        if(!camera.PreviewReleased){
+            nativeStartSubmitted=false;Starting=false;SetCaptureBusy(false);
+            status.SetState("Camera preview did not release");camera.ResumePreview();yield break;
+        }
         lastBodyTimestamp=0;lastBodySourceTime=0;hadBody=false;
         bool ok=false;
         try { if(recorder!=null){recorder.Call("setServerUrl",controller.serverUrl);nativeStartSubmitted=true;ok=recorder.Call<bool>("start",recordingMountMode);} }
@@ -158,6 +167,7 @@ public class WarpCaptureBridge : MonoBehaviour {
             nextPoll=Time.realtimeSinceStartupAsDouble+0.2;
             SyncMountMode();
             var s=JsonUtility.FromJson<NativeStatus>(recorder.Call<string>("status"));
+            nativeQuestFps=s.quest_source_fps;
             UploadText=$"Upload pending · {s.pending}/30";
             UploadDetail=s.upload_state=="Sending"?$"Sending · {s.progress*100:F0}%":s.upload_state=="Idle"?"":s.upload_state;
             if(s.state=="Recording"&&!Armed){Starting=false;Draining=false;Armed=true;status.SetClean(true);status.SetState("Recording");}

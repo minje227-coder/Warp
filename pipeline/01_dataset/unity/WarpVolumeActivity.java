@@ -12,6 +12,13 @@ import com.unity3d.player.UnityPlayerGameActivity;
 
 /** Volume up toggles capture; volume down selects the headset mount mode. */
 public class WarpVolumeActivity extends UnityPlayerGameActivity {
+    private final android.content.BroadcastReceiver usbAttachReceiver = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context context, Intent intent) {
+            if (android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(intent.getAction()))
+                WarpUsbCamera.requestAttachedAccess(WarpVolumeActivity.this);
+        }
+    };
+    private boolean usbReceiverRegistered;
     private boolean volumeUpHeld = false;
     private boolean volumeDownHeld = false;
     private boolean neckMount, proximityOverrideActive, captureBusy;
@@ -30,6 +37,17 @@ public class WarpVolumeActivity extends UnityPlayerGameActivity {
         super.onCreate(savedState);
         neckMount = getSharedPreferences("WarpMountMode", MODE_PRIVATE).getBoolean("neck", false);
         neckIdleSinceMs = SystemClock.elapsedRealtime();
+        registerReceiver(usbAttachReceiver, new android.content.IntentFilter(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED), android.content.Context.RECEIVER_NOT_EXPORTED);
+        usbReceiverRegistered = true;
+        WarpUsbCamera.requestAttachedAccess(this);
+    }
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == 47120) {
+            boolean allowed = results.length > 0;
+            for (int value : results) allowed &= value == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (allowed) WarpUsbCamera.requestAttachedAccess(this);
+        }
     }
     @Override protected void onStart() {
         super.onStart();
@@ -106,6 +124,7 @@ public class WarpVolumeActivity extends UnityPlayerGameActivity {
         super.onStop();
     }
     @Override protected void onDestroy() {
+        if (usbReceiverRegistered) { unregisterReceiver(usbAttachReceiver); usbReceiverRegistered = false; }
         releaseMountProximity(); super.onDestroy();
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {

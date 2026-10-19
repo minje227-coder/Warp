@@ -50,7 +50,26 @@ def configure_import_workers(destination):
         text = re.sub(pattern, replacement, text, flags=re.MULTILINE) if re.search(pattern, text, re.MULTILINE) else text + replacement + '\n'
     path.write_text(text)
 
-def prepare(destination, server_ip=None):
+def build_usb_camera(destination, editor=None):
+    """Compile the in-tree USB ISO transport for the Quest ARM64 Android player."""
+    ndk_env = os.environ.get('WARP_ANDROID_NDK')
+    candidates = [Path(ndk_env)] if ndk_env else []
+    if editor:
+        candidates.extend((editor.parent / 'Data/PlaybackEngines/AndroidPlayer/NDK',
+                           editor.parent.parent / 'AndroidPlayer/NDK'))
+    ndk = next((p for p in candidates if (p / 'toolchains/llvm/prebuilt').is_dir()), None)
+    if ndk is None:
+        raise RuntimeError('Set WARP_ANDROID_NDK to the Android NDK (required for USB camera)')
+    compilers = list((ndk / 'toolchains/llvm/prebuilt').glob('*/bin/aarch64-linux-android32-clang'))
+    if len(compilers) != 1:
+        raise RuntimeError('Expected one ARM64 Android API 32 NDK compiler')
+    output = destination / 'Assets/Plugins/Android/arm64-v8a/libwarp_usb_iso.so'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([str(compilers[0]), '-shared', '-fPIC', '-O2', '-Wall', '-Wextra', '-Werror',
+                    str(ROOT / 'pipeline/01_dataset/unity/native/WarpUsbIso.c'), '-o', str(output)], check=True)
+
+
+def prepare(destination, server_ip=None, editor=None):
     vendor = ROOT / 'third_party/capture/xrt-client'
     if subprocess.check_output(['git', '-C', str(vendor), 'rev-parse', 'HEAD'], text=True).strip() != PIN:
         raise RuntimeError('XRT vendor revision differs from the reviewed patch base')
@@ -79,6 +98,9 @@ def prepare(destination, server_ip=None):
     java.mkdir()
     shutil.copy2(source / 'WarpVolumeActivity.java', java / 'WarpVolumeActivity.java')
     shutil.copy2(source / 'WarpRawRecorder.java', java / 'WarpRawRecorder.java')
+    shutil.copy2(source / 'WarpUsbCamera.java', java / 'WarpUsbCamera.java')
+    shutil.copy2(source / 'WarpUsbPreview.java', java / 'WarpUsbPreview.java')
+    build_usb_camera(destination, editor)
     scene = destination / 'Assets/Scenes/MainScene.unity'
     text = scene.read_text()
     if text.count('RequestedResolution: {x: 1280, y: 960}') != 1:
@@ -134,7 +156,7 @@ def main():
     if args.repair_linux_packages:
         repair_linux_packages(args.project.resolve())
         return 0
-    project = prepare(args.project.resolve(),args.server_ip)
+    project = prepare(args.project.resolve(),args.server_ip,args.editor)
     print('Prepared unified XRT project:', project, flush=True)
     if args.prepare_only: return 0
     if not args.editor or not args.editor.is_file():

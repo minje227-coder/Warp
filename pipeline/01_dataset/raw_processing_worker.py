@@ -19,6 +19,9 @@ def _run_once(root, processor=process, tag_size_m=None, offset_ns=None, retry_er
     receipts += list((root/'raw').glob('*/*/transfer.json'))
     for receipt in sorted(receipts):
         source=receipt.parent;manifest=source/'manifest.json'
+        # Receiver staging becomes visible before its final atomic rename.
+        # Processing it races that rename and poisons the UUID job with an error.
+        if source.name.endswith('.partial'):continue
         if not manifest.is_file(): continue
         try:
             metadata=json.loads(manifest.read_text());transfer=json.loads(receipt.read_text())
