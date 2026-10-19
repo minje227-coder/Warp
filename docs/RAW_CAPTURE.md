@@ -232,3 +232,39 @@ long-duration or server-upload qualification. The final release build only
 updates the recording version label after these hardware runs; the tested
 camera implementation is unchanged. Release assets include exact APK and
 camera-source hashes and verification details.
+
+## Lossless streaming uploads (3.0.12)
+
+Install `requirements-raw.txt` and update/restart the receiver before the updated
+app. New uploads stream a deterministic ZIP archive through Zstd level 1. Each
+independent Zstd block has at most 1 MiB of source input, a content-size declaration
+and checksum. The wire format is `WZB1`, followed by big-endian uint32 compressed
+block lengths and frames, terminated by a zero length. Compression and network
+transfer run together without a local `upload.zip` or archive-hashing prepass.
+Camera modes, raw YUYV pixels, timestamps and source manifest hashes are unchanged.
+Existing fixed-length ZIP clients remain supported. The new app requires the
+stream-capable receiver.
+
+The sender hashes ZIP bytes and wire bytes as it writes. The receiver bounds both
+sizes, validates block dimensions/checksums and the stream terminator, then checks
+the sealed manifest hash and every expanded source size/SHA-256. Original files
+are durably committed before a receipt includes both archive and transport hashes.
+Quest confirms the receipt only when all expected hashes match. Temporary input
+is removed on failed/interrupted uploads. Recording retains priority over upload.
+Native compression uses the checksum-pinned upstream Android zstd-jni 1.5.7-6 AAR;
+both upstream BSD license notices are included in the player resources.
+
+Before sending, Quest checks `/upload_raw/receipt` with the episode ID and exact
+manifest hash. A durable receipt repairs a lost HTTP response without resending
+the file; a conflicting manifest or missing committed source is not acknowledged.
+This recovers completed uploads; partially transferred files still retry from the
+start. Receiver validation has a five-minute client response timeout. Old cached
+ZIPs are removed only after a matching receipt is confirmed.
+
+On Quest 3, matched wireless trials used the same 99,532,800 source bytes sampled
+from the beginning, middle and end of a D435 recording. The existing local ZIP,
+archive hash and upload path took 3.17–3.50 s (two trials). Zstd streaming took
+1.77–1.84 s (three trials), sending 50,992,633 bytes; every restored sample SHA-256
+matched. This is about 1.8 times faster for that sample and Wi-Fi condition, not a
+universal speed guarantee. These trials used an isolated receiver and are separate
+from full-app upload validation.

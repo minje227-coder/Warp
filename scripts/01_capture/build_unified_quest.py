@@ -11,9 +11,31 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 PIN = 'a82247aaf1100cbdd045034fe34c7d56c106412c'
+ZSTD_AAR = 'zstd-jni-1.5.7-6.aar'
+ZSTD_SHA256 = '7ceecc8bfc2f49817afc34965962c50b1c47ba5f60584e8a96efd4f813e46393'
+
+def prepare_zstd(destination):
+    """Pin the upstream Android binary; keep generated dependencies out of Git."""
+    cache = ROOT / '.venv/warp-dependencies' / ZSTD_AAR
+    if not cache.is_file() or hashlib.sha256(cache.read_bytes()).hexdigest() != ZSTD_SHA256:
+        url = 'https://repo.maven.apache.org/maven2/com/github/luben/zstd-jni/1.5.7-6/' + ZSTD_AAR
+        with urllib.request.urlopen(url, timeout=60) as response:
+            data = response.read()
+        if hashlib.sha256(data).hexdigest() != ZSTD_SHA256:
+            raise RuntimeError('Zstd Android dependency checksum mismatch')
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_bytes(data)
+    plugins = destination / 'Assets/Plugins/Android'
+    plugins.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(cache, plugins / ZSTD_AAR)
+    resources = destination / 'Assets/Resources'
+    resources.mkdir(parents=True, exist_ok=True)
+    for name in ('zstd-jni-LICENSE.txt', 'zstd-LICENSE.txt'):
+        shutil.copy2(ROOT / 'pipeline/01_dataset/unity/licenses' / name, resources / name)
 
 def hydrate_assets(destination, vendor):
     """git archive emits LFS pointers; copy only verified hydrated asset bytes."""
@@ -98,6 +120,9 @@ def prepare(destination, server_ip=None, editor=None):
     java.mkdir()
     shutil.copy2(source / 'WarpVolumeActivity.java', java / 'WarpVolumeActivity.java')
     shutil.copy2(source / 'WarpRawRecorder.java', java / 'WarpRawRecorder.java')
+    shutil.copy2(source / 'WarpUploadArchive.java', java / 'WarpUploadArchive.java')
+    shutil.copy2(source / 'WarpZstdOutputStream.java', java / 'WarpZstdOutputStream.java')
+    prepare_zstd(destination)
     shutil.copy2(source / 'WarpUsbCamera.java', java / 'WarpUsbCamera.java')
     shutil.copy2(source / 'WarpUsbPreview.java', java / 'WarpUsbPreview.java')
     build_usb_camera(destination, editor)

@@ -20,8 +20,18 @@ public static class WarpBuild
             PlayerSettings.Android.useCustomKeystore = false;
         }
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
-        PlayerSettings.bundleVersion = "3.0.11-raw";
-        PlayerSettings.Android.bundleVersionCode = 30011;
+        PlayerSettings.bundleVersion = "3.0.12-raw";
+        PlayerSettings.Android.bundleVersionCode = 30012;
+        var uploadPlugin = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpUploadArchive.java") as PluginImporter;
+        if (uploadPlugin == null) throw new Exception("Upload stream plugin missing");
+        uploadPlugin.SetCompatibleWithAnyPlatform(false); uploadPlugin.SetCompatibleWithEditor(false);
+        uploadPlugin.SetCompatibleWithPlatform(BuildTarget.Android, true); uploadPlugin.SaveAndReimport();
+        foreach (string pluginPath in new[] { "Assets/WarpAndroid/WarpZstdOutputStream.java", "Assets/Plugins/Android/zstd-jni-1.5.7-6.aar" }) {
+            var plugin = AssetImporter.GetAtPath(pluginPath) as PluginImporter;
+            if (plugin == null) throw new Exception("Zstd upload plugin missing: " + pluginPath);
+            plugin.SetCompatibleWithAnyPlatform(false); plugin.SetCompatibleWithEditor(false);
+            plugin.SetCompatibleWithPlatform(BuildTarget.Android, true); plugin.SaveAndReimport();
+        }
         var recorderPlugin = AssetImporter.GetAtPath("Assets/WarpAndroid/WarpRawRecorder.java") as PluginImporter;
         if (recorderPlugin == null) throw new Exception("Native raw recorder not imported");
         recorderPlugin.SetCompatibleWithAnyPlatform(false); recorderPlugin.SetCompatibleWithEditor(false);

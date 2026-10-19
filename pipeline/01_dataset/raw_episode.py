@@ -43,7 +43,41 @@ def atomic_json(path, value):
         os.close(fd)
 
 
-def import_raw_episode(source, out_root, upload_id, checksum):
+def saved_receipt(out_root, upload_id, manifest_checksum):
+    """Recover a lost HTTP reply using the exact sealed source manifest, not ZIP bytes."""
+    if not re.fullmatch('[a-f0-9]{32}', upload_id) or not re.fullmatch('[a-f0-9]{64}', manifest_checksum):
+        raise ValueError('Invalid identity/manifest checksum')
+    out_root = Path(out_root).resolve()
+    with LOCK:
+        receipt_path = out_root / '.raw_uploads' / (upload_id + '.json')
+        if receipt_path.is_file():
+            receipt = json.loads(receipt_path.read_text())
+        else:
+            matches = []
+            for root in (out_root, out_root / 'raw'):
+                for leaf in (upload_id, '*_' + upload_id):
+                    matches.extend(root.glob('*/' + leaf + '/transfer.json'))
+            if not matches:
+                return None
+            if len(matches) != 1:
+                raise ValueError('Duplicate raw episode identity')
+            receipt = json.loads(matches[0].read_text())
+        folder = Path(receipt['episode']).resolve()
+        if not folder.is_relative_to(out_root) or not (folder / 'transfer.json').is_file():
+            raise ValueError('Confirmed PC episode missing; do not acknowledge')
+        if receipt.get('state') != 'saved' or receipt.get('upload_id') != upload_id:
+            raise ValueError('Invalid durable receipt')
+        if digest(folder / 'manifest.json') != manifest_checksum:
+            raise ValueError('Episode identity reused with a different manifest')
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        for name, entry in manifest['files'].items():
+            source = (folder / name).resolve()
+            if source.parent != folder or not source.is_file() or source.stat().st_size != entry['bytes']:
+                raise ValueError('Confirmed PC source missing; do not acknowledge')
+        return dict(receipt, manifest_sha256=manifest_checksum)
+
+
+def import_raw_episode(source, out_root, upload_id, checksum, *, manifest_checksum=None, source_bytes=None, transport=None):
     if not re.fullmatch('[a-f0-9]{32}', upload_id) or not re.fullmatch('[a-f0-9]{64}', checksum):
         raise ValueError('Invalid transfer identity')
     source, out_root = Path(source), Path(out_root).resolve()
@@ -87,7 +121,12 @@ def import_raw_episode(source, out_root, upload_id, checksum):
                 raise ValueError('Directories/symlinks are not valid episode files')
             if archive.getinfo('manifest.json').file_size > 1024 * 1024:
                 raise ValueError('Manifest too large')
-            manifest = json.loads(archive.read('manifest.json'))
+            manifest_data = archive.read('manifest.json')
+            if manifest_checksum is not None and hashlib.sha256(manifest_data).hexdigest() != manifest_checksum:
+                raise ValueError('Manifest checksum mismatch')
+            if source_bytes is not None and sum(e.file_size for e in entries) != source_bytes:
+                raise ValueError('Expanded source length mismatch')
+            manifest = json.loads(manifest_data)
             if manifest.get('schema_version') != 3 or manifest.get('episode_id') != upload_id:
                 raise ValueError('Raw manifest identity/schema mismatch')
             external = manifest.get('external_camera', {})
@@ -116,6 +155,8 @@ def import_raw_episode(source, out_root, upload_id, checksum):
             if folder.exists():
                 raise ValueError('Episode destination already exists; preserved')
             folder.parent.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(out_root).free < sum(e.file_size for e in entries) + 512*1024**2:
+                raise OSError('PC storage low for expanded sources')
             staging = folder.with_name(folder.name + '.partial')
             if staging.exists():
                 shutil.rmtree(staging)  # Receiver-owned incomplete import only.
@@ -143,8 +184,10 @@ def import_raw_episode(source, out_root, upload_id, checksum):
                     from external_camera import validate_external_camera
                     validate_external_camera(staging)
                 r = {'state':'saved', 'upload_id':upload_id, 'sha256':checksum,
+                     'manifest_sha256':hashlib.sha256(manifest_data).hexdigest(),
                      'episode':str(folder), 'processing_state':'pending',
                      'source_preserved':True, 'dataset_ready':False}
+                if transport is not None:r['transport']=transport
                 atomic_json(staging/'transfer.json', r)
                 staging.rename(folder)
                 parent_fd = os.open(folder.parent, os.O_RDONLY)

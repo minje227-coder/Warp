@@ -65,7 +65,7 @@ async def capture(args):
     # of legacy capture/AprilTag processing. Keep the existing offer endpoint.
     from raw_receiver import create_app
     for route in create_app(args.out_root).routes:
-        if getattr(route, 'path', '') in ('/health', '/upload_raw'):
+        if getattr(route, 'path', '') in ('/health', '/upload_raw', '/upload_raw/receipt'):
             app.router.routes.append(route)
     peers = set()
     channels = []

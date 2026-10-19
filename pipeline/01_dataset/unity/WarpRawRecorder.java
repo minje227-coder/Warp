@@ -305,7 +305,7 @@ public final class WarpRawRecorder {
                 .put("mount_calibration","unverified")
                 .put("body_pose_validation",e.mountMode.equals("neck")?"unverified_neck_mount":"meta_runtime_accuracy_unverified")
                 .put("proximity_policy",e.mountMode.equals("neck")?"periodic_close_override_until_head_or_20min_idle":"normal_sensor")
-                .put("app_version","3.0.11-raw").put("files",files);
+                .put("app_version","3.0.12-raw").put("files",files);
             writeAtomic(new File(e.dir,"manifest.json"),manifest.toString());
         }catch(Exception ex){try{writeAtomic(new File(e.dir,"interrupted.json"),new JSONObject().put("reason",ex.toString()).toString());}catch(Exception ignored){}}});
     }
@@ -319,33 +319,54 @@ public final class WarpRawRecorder {
         List<File> q=episodes();q.sort(Comparator.comparingLong(this::episodeCreated));File next=null;
         for(File d:q)if(new File(d,"manifest.json").exists()&&!new File(d,"receipt.json").exists()){next=d;break;}
         if(next==null){uploadState="Idle";progress=0;Thread.sleep(1000);continue;}
-        uploadingId=next.getName();uploadState="Preparing upload";File zip=new File(next,"upload.zip");
-        if(!zip.exists()){
-            File partial=new File(next,"upload.zip.partial");
-            try(ZipOutputStream z=new ZipOutputStream(new FileOutputStream(partial))){z.setLevel(0);
-                for(File f:next.listFiles())if(!f.getName().startsWith("upload.")&&!f.getName().equals("receipt.json")){
-                    z.putNextEntry(new ZipEntry(f.getName()));try(InputStream in=new FileInputStream(f)){byte[] buf=new byte[65536];int n;while((n=in.read(buf))!=-1){z.write(buf,0,n);yieldToCapture();}}z.closeEntry();
-                }
-            }if(!partial.renameTo(zip))throw new IOException("Archive finalize failed");
-        }
-        String digest=sha(zip);uploadState="Sending";progress=0;
-        HttpURLConnection c=(HttpURLConnection)new URL(serverUrl.replaceAll("/offer/?$","")+"/upload_raw?upload_id="+next.getName()).openConnection();
+        uploadingId=next.getName();uploadState="Checking receiver";progress=0;
+        File manifestFile=new File(next,"manifest.json");String manifestDigest=sha(manifestFile);
+        String endpoint=serverUrl.replaceAll("/offer/?$","")+"/upload_raw";
+        HttpURLConnection probe=(HttpURLConnection)new URL(endpoint+"/receipt?upload_id="+next.getName()+"&manifest_sha256="+manifestDigest).openConnection();
         try {
-            c.setRequestMethod("POST");c.setDoOutput(true);c.setConnectTimeout(10000);c.setReadTimeout(60000);c.setFixedLengthStreamingMode(zip.length());
-            c.setRequestProperty("Content-Type","application/zip");c.setRequestProperty("X-Warp-SHA256",digest);
-            try(OutputStream out=c.getOutputStream();InputStream in=new FileInputStream(zip)){byte[] b=new byte[65536];long sent=0;int n;while((n=in.read(b))!=-1){out.write(b,0,n);sent+=n;progress=(double)sent/zip.length();yieldToCapture();}}
-            if(c.getResponseCode()!=200)throw new IOException("Receiver HTTP "+c.getResponseCode());
-            String reply=read(c.getInputStream());JSONObject r=new JSONObject(reply);
-            if(!r.getString("upload_id").equals(next.getName())||!r.getString("sha256").equals(digest)||!r.getString("state").equals("saved"))throw new IOException("Receipt mismatch");
-            writeAtomic(new File(next,"receipt.json"),reply);zip.delete();uploadingId="";delay=2;
+            probe.setConnectTimeout(10000);probe.setReadTimeout(15000);
+            int code=probe.getResponseCode();
+            if(code==200){String reply=read(probe.getInputStream());checkReceipt(reply,next.getName(),manifestDigest,null,null);confirmUpload(next,reply);delay=2;continue;}
+            if(code!=404)throw new IOException("Receipt lookup HTTP "+code);
+        }finally{probe.disconnect();}
+        JSONObject manifest;try(InputStream in=new FileInputStream(manifestFile)){manifest=new JSONObject(read(in));}
+        List<String> names=new ArrayList<>();names.add("manifest.json");long total=manifestFile.length();
+        JSONObject entries=manifest.getJSONObject("files");Iterator<String> keys=entries.keys();
+        while(keys.hasNext()){String name=keys.next();long bytes=entries.getJSONObject(name).getLong("bytes");
+            if(new File(next,name).length()!=bytes)throw new IOException("Source size differs from manifest: "+name);
+            names.add(name);total=Math.addExact(total,bytes);}
+        final long sourceBytes=total;long started=SystemClock.elapsedRealtime();uploadState="Compressing + sending";
+        HttpURLConnection c=(HttpURLConnection)new URL(endpoint+"?upload_id="+next.getName()).openConnection();
+        try {
+            c.setRequestMethod("POST");c.setDoOutput(true);c.setConnectTimeout(10000);c.setReadTimeout(300000);c.setChunkedStreamingMode(262144);
+            c.setRequestProperty("Content-Type","application/octet-stream");c.setRequestProperty("X-Warp-Stream","zip-zstd-block-v1");
+            c.setRequestProperty("X-Warp-Source-Bytes",Long.toString(sourceBytes));c.setRequestProperty("X-Warp-Manifest-SHA256",manifestDigest);
+            WarpZstdOutputStream compressed=new WarpZstdOutputStream(c.getOutputStream());
+            WarpUploadArchive.Result result=WarpUploadArchive.write(compressed,next,names,0,(raw,wire)->{progress=(double)raw/sourceBytes;yieldToCapture();});
+            if(result.sourceBytes!=sourceBytes)throw new IOException("Source size changed during upload");
+            uploadState="Verifying on receiver";
+            if(c.getResponseCode()!=200)throw new IOException("Receiver HTTP "+c.getResponseCode()+": "+read(c.getErrorStream()));
+            String reply=read(c.getInputStream());checkReceipt(reply,next.getName(),manifestDigest,result.sha256,compressed.sha256);
+            confirmUpload(next,reply);delay=2;
+            android.util.Log.i("WarpRaw","Upload complete id="+next.getName()+" source_bytes="+result.sourceBytes+" wire_bytes="+compressed.wireBytes+" elapsed_ms="+(SystemClock.elapsedRealtime()-started)+" compression=zstd-1");
         }finally{c.disconnect();}
     }catch(Exception ex){android.util.Log.w("WarpRaw","Upload retry: "+ex.getMessage());uploadState="Retrying";uploadingId="";progress=0;try{Thread.sleep(delay*1000L);}catch(InterruptedException ignored){}delay=Math.min(60,delay*2);}}}
+    private void checkReceipt(String reply,String id,String manifestDigest,String archiveDigest,String wireDigest)throws Exception{
+        JSONObject r=new JSONObject(reply);
+        if(!r.getString("upload_id").equals(id)||!r.getString("state").equals("saved")||!r.getString("manifest_sha256").equals(manifestDigest)
+            ||(archiveDigest!=null&&!r.getString("sha256").equals(archiveDigest))
+            ||(wireDigest!=null&&!r.getJSONObject("transport").getString("wire_sha256").equals(wireDigest)))throw new IOException("Receipt mismatch");
+    }
+    private void confirmUpload(File directory,String reply)throws Exception{
+        writeAtomic(new File(directory,"receipt.json"),reply);
+        new File(directory,"upload.zip").delete();new File(directory,"upload.zip.partial").delete();uploadingId="";progress=1;
+    }
     private void yieldToCapture() throws InterruptedException{if(active!=null)Thread.sleep(10);}
     private String sha(File f)throws Exception{MessageDigest md=MessageDigest.getInstance("SHA-256");try(InputStream in=new FileInputStream(f)){byte[] b=new byte[65536];int n;while((n=in.read(b))!=-1){md.update(b,0,n);yieldToCapture();}}StringBuilder s=new StringBuilder();for(byte b:md.digest())s.append(String.format("%02x",b&255));return s.toString();}
     private static BufferedWriter writer(File d,String n)throws IOException{return new BufferedWriter(new OutputStreamWriter(new FileOutputStream(new File(d,n)),"UTF-8"),65536);}
     private static void line(BufferedWriter w,JSONObject j)throws IOException{w.write(j.toString());w.newLine();}
     private static JSONArray array(float[] a)throws JSONException{JSONArray j=new JSONArray();if(a!=null)for(float x:a)j.put(x);return j;}
-    private static String read(InputStream in)throws IOException{ByteArrayOutputStream b=new ByteArrayOutputStream();byte[] x=new byte[4096];int n;while((n=in.read(x))!=-1){if(b.size()>1048576)throw new IOException("Reply too large");b.write(x,0,n);}return b.toString("UTF-8");}
+    private static String read(InputStream in)throws IOException{if(in==null)return "";ByteArrayOutputStream b=new ByteArrayOutputStream();byte[] x=new byte[4096];int n;while((n=in.read(x))!=-1){if(b.size()>1048576)throw new IOException("Reply too large");b.write(x,0,n);}return b.toString("UTF-8");}
     private static void writeAtomic(File f,String content)throws IOException{android.util.AtomicFile a=new android.util.AtomicFile(f);FileOutputStream o=a.startWrite();try{o.write(content.getBytes("UTF-8"));a.finishWrite(o);}catch(IOException e){a.failWrite(o);throw e;}}
     private static void deleteTree(File d)throws IOException{File[] fs=d.listFiles();if(fs!=null)for(File f:fs){if(f.isDirectory())deleteTree(f);else if(!f.delete())throw new IOException("Cannot delete confirmed backup");}if(!d.delete())throw new IOException("Cannot remove confirmed backup");}
 }
