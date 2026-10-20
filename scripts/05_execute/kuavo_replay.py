@@ -599,7 +599,7 @@ def main():
             if sample is None:return
             with lock:
                 if stamp<=state['claw_stamp']:return
-                state.update(claw=sample[0],claw_state=sample[1],claw_at=time.monotonic(),claw_stamp=stamp)
+                state.update(claw=sample[0],claw_state=sample[1],claw_at=time.monotonic(),claw_stamp=stamp,claw_stamp_ns=msg.header.stamp.to_nsec())
         except Exception as exc:
             with lock:state['failure']=str(exc)
     def on_reach(msg):
@@ -662,7 +662,7 @@ def main():
             done.wait(.5)
     threading.Thread(target=read_arm_mode,daemon=True).start()
     base_pub=base_pose_pub=arm_pub=torso_pub=claw_pub=None;torso_model=None;pose_sent_at=None;plan=None
-    success=False;activated=False;entered=False;arm_service=None;prev_arm=None
+    success=False;activated=False;entered=False;arm_service=None;prev_arm=None;replay_clock=None
     mpc_service=None;quick_service=None;prev_mpc=None;mpc_changed=False
     commanded=None;last_claw=None;link_ready=False
 
@@ -899,7 +899,9 @@ def main():
                     or (target.get('stationary_confirmed') is not True and max(map(abs,state['v']))>math.radians(1))
                     or max(abs(a-b) for a,b in zip(state['claw'],first[3]))>CLAW_POSITION_TOL):
                     raise ValueError('replay 첫 state 도착·정지를 다시 확인하세요.')
-            began=time.monotonic();last=began-.01;last_world=[0.,0.,0.]
+            began=time.monotonic();replay_clock=began;last=began-.01;last_world=[0.,0.,0.]
+            emit(event='replay_start',ros_time_ns=rospy.Time.now().to_nsec(),worker_monotonic_s=began,execution_s=plan.begin,
+                 planned_duration_s=plan.duration,planned_end_execution_s=plan.end,rate=1.)
             history=collections.deque([(began-2.,last_world)]);settled=None;report=0;replay_still=Stationarity();claw_final_sent=False
             while True:
                 now=time.monotonic();dt=now-last;last=now
@@ -911,6 +913,7 @@ def main():
                         raise ValueError('replay 중 영상·제어 연결이 끊겼습니다.')
                     actual=list(state['q']);velocity=list(state['v']);grip=list(state['claw']);grip_state=list(state['claw_state'])
                     pose=predict_pose(tracker.pose,tracker.vision_at,now,history)
+                    sensor_stamp_ns=state.get('q_stamp');claw_stamp_ns=state.get('claw_stamp_ns');vision_frame_id=str(tracker.frame)
                 p,v,a,claw=plan.elapsed(elapsed)
                 commanded=p[3:]
                 if max(abs(x-y) for x,y in zip(actual,commanded))>math.radians(10):
@@ -937,7 +940,9 @@ def main():
                 elif settled is None:settled=now
                 emit(sample=True,execution_s=min(plan.end,plan.begin+elapsed),elapsed_s=min(elapsed,plan.duration),
                      position=p,velocity_target=v,acceleration_target=a,claw_target=claw,
-                     actual_q=actual,actual_v=velocity,actual_claw=grip,base_pose=pose,base_command=values)
+                     actual_q=actual,actual_v=velocity,actual_claw=grip,base_pose=pose,base_command=values,
+                     ros_time_ns=rospy.Time.now().to_nsec(),worker_monotonic_s=now,sensor_stamp_ns=sensor_stamp_ns,
+                     claw_stamp_ns=claw_stamp_ns,vision_frame_id=vision_frame_id)
                 if settled is not None and now-settled>=1. and tracker.vision_at>=settled:
                     success=True;break
                 if elapsed>plan.duration+10:raise ValueError('replay 끝 자세 도착·정지 확인 시간 초과')
@@ -1053,6 +1058,9 @@ def main():
             if owned:
                 try:mpc_service(control_mode=prev_mpc)
                 except Exception as exc:emit(error='MPC 제어 모드 복원 실패: '+str(exc))
+        if replay_clock is not None:
+            emit(event='replay_end',ros_time_ns=rospy.Time.now().to_nsec(),worker_monotonic_s=time.monotonic(),success=success,
+                 execution_s=min(plan.end,plan.begin+max(0.,time.monotonic()-replay_clock)))
         emit(done=True,success=success,head_excluded=True,executor=EXECUTOR_VERSION,controller_pva_exact=False,
              base_goal_odom=tracker.goal if tracker.frozen else None,base_odom_frame=tracker.odom_frame,
              stage=('replay 종료·정지 확인 완료' if state.get('replay') else '첫 자세 도착·정지 확인 완료') if success else '실행 정지')
