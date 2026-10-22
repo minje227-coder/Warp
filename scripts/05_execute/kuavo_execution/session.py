@@ -4,6 +4,7 @@ Only configure() binds host resources; imports do not load a dashboard or ROS.
 The host provides a control store, episode/vision callbacks and a data directory.
 All readiness, ownership, lease, execution, capture and result policy lives here.
 """
+import copy
 import json
 import math
 import threading
@@ -44,6 +45,7 @@ def configure(*, control, episode_source, paths, ros_setup=(), command_sources=N
 LOCK=threading.RLock()
 CURRENT=None
 PAGE_LEASE_S=2.
+HEARTBEAT_S=.15
 
 
 def observation(live,sample):
@@ -79,7 +81,10 @@ def unavailable():
 
 
 class Session:
-    def __init__(self,detail,sid,replay_plan=None,stationary_confirmed=False):
+    def __init__(self,detail,sid,replay_plan=None,stationary_confirmed=False,confirmed_state=None):
+        self.confirmed_state=copy.deepcopy(confirmed_state)
+        self.preparation_reused=False
+        self.worker_phase='preparation'
         self.stationary_confirmed=stationary_confirmed is True
         self.replay_plan=replay_plan;self.kind='replay' if replay_plan is not None else 'align'
         self.vision_locked=False;self.base_goal_odom=None;self.base_odom_frame=None;self.base_error=None
@@ -112,6 +117,7 @@ class Session:
 
     def write(self,data):
         with self.write_lock:
+            if data.get('op') == 'beat' and self.stop_event.is_set():return
             if self.proc and self.proc.poll() is None:
                 self.proc.stdin.write((json.dumps(data,separators=(',',':'))+'\n').encode());self.proc.stdin.flush()
 
@@ -145,6 +151,16 @@ class Session:
                     try:self.trace.write(json.dumps(d,separators=(',',':'))+'\n')
                     except (OSError,ValueError) as exc:
                         self.error=self.trace_error='replay 실행 기록 저장 실패: '+str(exc);self.stop_event.set()
+                if d.get('preparation') and self.trace:
+                    try:self.trace.write(json.dumps(d,separators=(',',':'))+'\n')
+                    except (OSError,ValueError) as exc:
+                        self.error=self.trace_error='준비 단계 기록 저장 실패: '+str(exc);self.stop_event.set()
+                if (self.trace and not d.get('sample') and not d.get('preparation')
+                        and any(k in d for k in ('stage','error','done','event'))):
+                    row=dict(d,phase=self.worker_phase,received_monotonic_s=time.monotonic(),wall_time_s=time.time())
+                    try:self.trace.write(json.dumps(row,separators=(',',':'))+'\n');self.trace.flush()
+                    except (OSError,ValueError) as exc:
+                        self.error=self.trace_error='실행 단계 기록 저장 실패: '+str(exc);self.stop_event.set()
                 if d.get('elapsed_s') is not None:self.elapsed=d['elapsed_s']
                 if d.get('stage'):self.stage=d['stage']
                 if d.get('error'):self.error=d['error']
@@ -153,6 +169,96 @@ class Session:
 
     def drain(self):
         for _ in iter(self.proc.stderr.readline,b''):pass
+
+    def reuse_preparation(self,goal):
+        """Recheck the accepted first alignment without commanding another move."""
+        saved=self.confirmed_state
+        if saved is None:return False  # Standalone clients may request full preparation.
+        if (saved.get('id')!=self.key or saved.get('fingerprint')!=self.fingerprint
+                or not all(saved.get('checks',{}).get(k) is True for k in ('robot','boxes'))):
+            raise ValueError('첫 정렬 완료·배치 확인이 바뀌었습니다. 다시 확인하세요.')
+        snapshot=common.LINK.snapshot;now=time.time()
+        if not first_state.base_feedback_matches(saved.get('base_goal_odom'),saved.get('base_odom_frame'),snapshot,now):
+            raise ValueError('첫 정렬 후 베이스 위치 또는 피드백이 바뀌었습니다. 다시 정렬하세요.')
+        if not first_state.feedback_matches(saved.get('first_state_target',{}),snapshot,now):
+            raise ValueError('첫 정렬 후 관절·그리퍼 자세 또는 피드백이 바뀌었습니다. 다시 확인하세요.')
+        if not first_state.feedback_matches(goal,snapshot,now):
+            raise ValueError('선택한 첫 state와 현재 자세가 다릅니다. 첫 정렬을 다시 실행하세요.')
+        self.preparation_reused=True
+        self.base_goal_odom=list(saved['base_goal_odom']);self.base_odom_frame=saved['base_odom_frame']
+        row=dict(preparation=True,event='first_alignment_reused',phase='preparation',
+                 wall_time_s=now,worker_monotonic_s=time.monotonic(),
+                 base_goal_odom=self.base_goal_odom,base_odom_frame=self.base_odom_frame)
+        if self.trace:self.trace.write(json.dumps(row,separators=(',',':'))+'\n');self.trace.flush()
+        return True
+
+    def heartbeat(self,finished,replaying):
+        """Keep worker/capture leases independent of catalogue and recorder checks.
+
+        Only the owning page renews beat_at. Vision-based preparation still needs
+        real observations; heartbeat must never renew its vision input lease.
+        """
+        try:
+            while not finished.is_set() and not self.stop_event.is_set() and self.proc.poll() is None:
+                if time.monotonic()-self.beat_at>PAGE_LEASE_S:
+                    raise ValueError('시작한 페이지와 연결이 끊겨 정지합니다.')
+                if replaying or self.vision_locked:
+                    self.write({'op':'beat'})
+                if self.capture:self.capture.send({'op':'beat'})
+                finished.wait(HEARTBEAT_S)
+        except Exception as exc:
+            self.error=self.error or str(exc)
+            self.success=False
+            self.stop_event.set()
+            # Do not wait for catalogue/recorder work (or the trace reader lock)
+            # before revoking the remote worker's permission to continue.
+            try:self.write({'op':'stop'})
+            except (OSError,ValueError):pass
+
+    def execute_worker(self,goal,replay_plan=None):
+        """Run one leased phase; preparation must finish before replay is launched."""
+        self.success=False;self.vision_locked=False
+        self.worker_phase='replay' if replay_plan is not None else 'preparation'
+        if self.stop_event.is_set():raise ValueError('첫 자세·replay 시작 취소')
+        if time.monotonic()-self.beat_at>PAGE_LEASE_S:raise ValueError('시작한 페이지 연결 소실')
+        self.proc=common.LINK.popen_script(str(playback.WORKER),[],setup_extra=setup_extra)
+        reader=threading.Thread(target=self.read,daemon=True);reader.start()
+        threading.Thread(target=self.drain,daemon=True).start()
+        config={'op':'configure','target':goal}
+        if replay_plan is not None:config['replay']=replay_plan
+        self.write(config)
+        finished=threading.Event()
+        heartbeat=threading.Thread(target=self.heartbeat,args=(finished,replay_plan is not None),
+                                   daemon=True,name='retargeting-heartbeat')
+        heartbeat.start()
+        try:
+            while self.proc.poll() is None and not self.stop_event.is_set():
+                if time.monotonic()-self.beat_at>PAGE_LEASE_S:raise ValueError('시작한 페이지와 연결이 끊겨 정지합니다.')
+                if self.capture:self.capture.check()
+                detail=episodes.selection_detail(self.key,self.sid)
+                if detail['fingerprint']!=self.fingerprint:raise ValueError('episode 결과가 바뀌어 정지합니다.')
+                if self.stop_event.is_set():break
+                if replay_plan is None and not self.vision_locked:
+                    episodes.HEAD.ensure();sample,*_=episodes.HEAD.snapshot()
+                    if not sample:raise ValueError('랙 영상 없음')
+                    live=episodes.overlay(detail,sample)
+                    packet=observation(live,sample)
+                    self.write(packet)
+                self.stop_event.wait(.15)
+            if self.stop_event.is_set():self.stop()
+            try:self.proc.wait(timeout=3)
+            except Exception:
+                self.proc.terminate();self.proc.wait(timeout=3)
+            reader.join(timeout=3)
+            if reader.is_alive():raise ValueError('replay 실행 기록 수신을 완료하지 못했습니다.')
+            if self.proc.returncode!=0 or self.stop_event.is_set():self.success=False
+        finally:
+            finished.set()
+            heartbeat.join(timeout=1.)
+            if heartbeat.is_alive():
+                self.stop_event.set()
+                raise ValueError('heartbeat 전송 종료 지연: 제어 연결을 정리합니다.')
+            if self.proc.stdin is not None:self.proc.stdin.close()
 
     def run(self):
         try:
@@ -185,42 +291,20 @@ class Session:
                     if episodes.selection_detail(self.key,self.sid)['fingerprint']!=self.fingerprint:raise ValueError('녹화 준비 중 선택 구간 변경')
                 self.capture.wait_ready(check_capture_wait)
                 self.manifest('running')
-            self.proc=common.LINK.popen_script(str(playback.WORKER),[],setup_extra=setup_extra)
-            reader=threading.Thread(target=self.read,daemon=True);reader.start()
-            threading.Thread(target=self.drain,daemon=True).start()
-            config={'op':'configure','target':goal}
-            if self.replay_plan is not None:config['replay']=self.replay_plan
-            self.write(config)
-            while self.proc.poll() is None and not self.stop_event.is_set():
-                if time.monotonic()-self.beat_at>PAGE_LEASE_S:raise ValueError('시작한 페이지와 연결이 끊겨 정지합니다.')
-                if self.capture:
-                    self.capture.check();self.capture.send({'op':'beat'})
-                detail=episodes.selection_detail(self.key,self.sid)
-                if detail['fingerprint']!=self.fingerprint:raise ValueError('episode 결과가 바뀌어 정지합니다.')
-                if self.kind=='align' and self.vision_locked:
-                    self.write({'op':'beat'})
+            if self.replay_plan is not None:
+                if self.reuse_preparation(goal):
+                    self.stage='첫 정렬 완료 자세 재사용 · replay 제어 연결 중'
                 else:
-                    episodes.HEAD.ensure();sample,*_=episodes.HEAD.snapshot()
-                    if not sample:raise ValueError('랙 영상 없음')
-                    live=episodes.overlay(detail,sample)
-                    packet=observation(live,sample)
-                    if self.replay_plan is not None:
-                        e=packet['error'];target=detail['initial']['base_pose'];yaw=target[2]-e[2]
-                        c,s=math.cos(yaw),math.sin(yaw)
-                        packet['pose']=[target[0]-c*e[0]+s*e[1],target[1]-s*e[0]-c*e[1],yaw]
-                    self.write(packet)
-                self.stop_event.wait(.15)
-            if self.stop_event.is_set():self.stop()
-            try:self.proc.wait(timeout=3)
-            except Exception:
-                self.proc.terminate();self.proc.wait(timeout=3)
-            reader.join(timeout=3)
-            if reader.is_alive():raise ValueError('replay 실행 기록 수신을 완료하지 못했습니다.')
-            if self.proc.returncode!=0 or self.stop_event.is_set():self.success=False
+                    self.stage='replay 준비 · 선택한 첫 자세로 이동 중'
+                    self.execute_worker(goal)
+                    if not self.success or self.error or self.stop_event.is_set():
+                        raise ValueError('replay 첫 자세 이동 실패: '+(self.error or '도착 확인 실패'))
+                self.stage='첫 자세 도착 완료 · replay 제어 연결 중'
+            self.execute_worker(goal,self.replay_plan)
             if self.success and self.replay_plan is None:
                 if self.base_goal_odom is None or not first_state.base_feedback_matches(
                         self.base_goal_odom,self.base_odom_frame,common.LINK.snapshot,time.time()):
-                    raise ValueError('고정 상대 목표의 odom 도착을 확인하지 못했습니다.')
+                    raise ValueError('랙 정렬 후 정지 위치의 odom 확인에 실패했습니다.')
                 if not first_state.feedback_matches(goal,common.LINK.snapshot,time.time()):
                     raise ValueError('첫 자세의 몸통·양팔·그리퍼 실측 도착을 확인하지 못했습니다.')
                 with episodes.LOCK:
@@ -228,7 +312,7 @@ class Session:
                     saved=episodes.SESSIONS.get(self.sid,{})
                     checks={'robot':True}
                     if (saved.get('id')==self.key and saved.get('fingerprint')==self.fingerprint
-                        and time.time()-saved.get('at',0)<episodes.ACK_S and saved.get('checks',{}).get('validation_override') is True):
+                        and saved.get('checks',{}).get('validation_override') is True):
                         checks['validation_override']=True
                     episodes.SESSIONS[self.sid]=dict(id=self.key,fingerprint=self.fingerprint,at=time.time(),checks=checks,first_state_target=goal,base_goal_odom=self.base_goal_odom,base_odom_frame=self.base_odom_frame)
         except Exception as exc:
@@ -277,7 +361,8 @@ class Session:
                   duration_s=self.elapsed,success=None,execution_completed=self.success,
                   fingerprint=self.fingerprint,selection_interval=self.replay_plan['interval'],
                   rate=1.,kalman_applied=False,stationary_confirmed=self.stationary_confirmed,
-                  trace_schema_version=2,
+                  preparation_reused=self.preparation_reused,
+                  trace_schema_version=2,base_feedback_enabled=False,base_endpoint_verified=False,
                   executor='Warp/scripts/05_execute/kuavo_replay.py',controller_pva_exact=False,
                   manual_standard_approval=self.replay_plan.get('manual_standard_approval',False),
                   standard_status=self.replay_plan.get('standard_status'),artifact_sha256=self.replay_plan['artifact_sha256'],
@@ -303,7 +388,10 @@ def start(detail,sid,sample,live,replay_plan=None,stationary_confirmed=False):
     with LOCK:
         reason=unavailable()
         if reason:raise ValueError(reason)
-        session=Session(detail,sid,replay_plan,stationary_confirmed=stationary_confirmed);CURRENT=session;common.ACTIONS['align']=session
+        confirmed=None
+        if replay_plan is not None:
+            with episodes.LOCK:confirmed=copy.deepcopy(episodes.SESSIONS.get(sid,{}))
+        session=Session(detail,sid,replay_plan,stationary_confirmed=stationary_confirmed,confirmed_state=confirmed);CURRENT=session;common.ACTIONS['align']=session
         session.thread.start()
         return session.status(sid)
 

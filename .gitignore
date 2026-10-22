@@ -41,3 +41,6 @@ outputs/
 /configs/quest_rgb.json
 *.keystore
 *.apk
+
+# Offline retargeting dependency environment
+**/.venv-retarget/

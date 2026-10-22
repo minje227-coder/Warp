@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -19,6 +20,8 @@ STANDARD = Path('/home/lab6/Warp-review/wilor-kuavo-standard')
 PYTHON = '/home/lab6/Warp/.venv-retarget/bin/python'
 WRAPPER = Path('/home/lab6/Warp/scripts/02_convert/convert_episode_standard.sh')
 MAX_PARALLEL = 2
+CALIBRATION_CAPTURE = None
+BASE_LINK_PREPARER = Path(__file__).resolve().parents[2]/'02_convert/prepare_base_link.py'
 ACTIVE = ('queued', 'running')
 PROTECTED = ('CURRENT.json','standard.py','standard_config.json','STANDARD.json','motion_policy.json','pipeline/solve.py','pipeline/render.py')
 
@@ -76,12 +79,42 @@ def status():
     return dict(max_parallel=MAX_PARALLEL,jobs=public)
 
 
-def enqueue(keys):
+def capture_calibration(key):
+    if CALIBRATION_CAPTURE is not None:
+        return CALIBRATION_CAPTURE(key)
+    from urllib.request import urlopen
+    from urllib.parse import quote
+    from urllib.error import HTTPError, URLError
+    base = os.environ.get('KUAVO_CALIBRATION_URL', 'http://127.0.0.1:7860/kuavo/retargeting/compute/calibration/')
+    try:
+        with urlopen(base+quote(key, safe=''), timeout=15) as response:
+            return json.load(response)
+    except HTTPError as exc:
+        try: message=json.loads(exc.read()).get('detail', str(exc))
+        except ValueError: message=str(exc)
+        raise ValueError('고정 높이 계산 거부: '+message) from exc
+    except (URLError, TimeoutError) as exc:
+        raise ValueError('고정 높이 계산 설정을 불러올 수 없습니다.') from exc
+
+
+def validate_tcp_lowering_cm(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 30:
+        raise ValueError('TCP 하향 보정은 0–30 cm 사이 숫자로 입력하세요.')
+    return float(value)
+
+
+def enqueue(keys, tcp_lowering_cm=3.):
+    tcp_lowering_cm = validate_tcp_lowering_cm(tcp_lowering_cm)
     if not isinstance(keys,list) or not keys or len(keys)>50 or any(not isinstance(k,str) for k in keys):
         raise ValueError('계산할 episode를 선택하세요.')
     catalog={e['id']:e for e in read(CATALOG)['episodes']}
     if any(k not in catalog for k in keys):raise ValueError('목록에 없는 episode입니다.')
+    # Validate original recording height references before mutating the queue.
+    calibrations={key:capture_calibration(key) for key in dict.fromkeys(keys)}
     with locked():
+        # A deletion may have completed during the calibration preflight.
+        catalog={e['id']:e for e in read(CATALOG)['episodes']}
+        if any(k not in catalog for k in keys):raise ValueError('삭제된 episode는 계산할 수 없습니다.')
         rows=jobs();accepted=[]
         for key in dict.fromkeys(keys):
             if key in rows and rows[key]['status'] in ACTIVE:
@@ -89,7 +122,12 @@ def enqueue(keys):
             e=catalog[key]
             if not Path(e.get('input_prepared') or e['prepared']).is_file():raise ValueError('준비된 입력이 없습니다: '+key)
             jid=uuid.uuid4().hex
-            rows[key]=dict(id=jid,episode=key,label=e.get('label',key),status='queued',stage='대기',created_at=time.time(),updated_at=time.time())
+            previous=rows.get(key,{})
+            rows[key]=dict(id=jid,episode=key,label=e.get('label',key),status='queued',stage='대기',created_at=time.time(),updated_at=time.time(),
+                           coordinate_frame='fixed_rack_height',calibration_at=calibrations[key]['captured_at'],
+                           tcp_lowering_cm=tcp_lowering_cm,tcp_lowering_frame='box_tag',
+                           superseded_result=e.get('result') or previous.get('result'),
+                           superseded_media=str(Path(e['video_manifest']).parent) if e.get('video_manifest') else None)
             accepted.append(jid)
         write(JOBS/'jobs.json',rows)
     return dict(ok=True,job_ids=accepted,max_parallel=MAX_PARALLEL)
@@ -149,7 +187,20 @@ def worker(key, jid):
     row=next(e for e in read(CATALOG)['episodes'] if e['id']==key)
     directory=JOBS/jid
     before={p:digest(STANDARD/p) for p in PROTECTED}
-    prepared,spec=prepare(row,directory/'input')
+    update(key,stage='실측 태그 고정 높이 적용')
+    calibration=capture_calibration(key)
+    write(directory/'calibration.json',calibration)
+    update(key,calibration_at=calibration['captured_at'])
+    with locked(): job = jobs().get(key, {})
+    if job.get('id') != jid:
+        raise ValueError('계산 작업 ID가 변경됐습니다.')
+    tcp_lowering_cm = validate_tcp_lowering_cm(job.get('tcp_lowering_cm', 0.))
+    source_prepared,_=prepare(row,directory/'recording-input')
+    run_checked([PYTHON,str(BASE_LINK_PREPARER),'--prepared',str(source_prepared),
+                 '--calibration',str(directory/'calibration.json'),'--output',str(directory/'input'),
+                 '--tcp-lowering-cm',str(tcp_lowering_cm)],
+                dict(os.environ,OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1'))
+    prepared=directory/'input/prepared.json';spec=read(prepared)
     name=key+'-dashboard-'+jid[:12]
     result=STANDARD/'results'/name
     update(key,stage='입력 확인',result=str(result))
@@ -187,10 +238,29 @@ def worker(key, jid):
             if e['id']==key:
                 e.update(prepared=str(prepared),result=str(result),video=media['video'],video_sha256=media['video_sha256'],
                          trajectory_sha256=media['trajectory_sha256'],review_duration_s=media['duration_s'],
-                         trimmed_source=True,arm_initialization_fixed=True,video_manifest=str(directory/'MEDIA.json'))
+                         trimmed_source=True,arm_initialization_fixed=True,coordinate_frame='fixed_rack_height',
+                         calibration_at=calibration['captured_at'],tcp_lowering_cm=tcp_lowering_cm,tcp_lowering_frame='box_tag',video_manifest=str(directory/'MEDIA.json'))
         write(CATALOG,catalog)
     update(key,status='done' if state=='verified' else 'rejected',stage='검증 통과' if state=='verified' else '검토 영상 준비 · 검증 미통과',
            validation_status=state,finished_at=time.time())
+
+
+def cleanup(dry_run=False):
+    try:
+        from . import retention
+    except ImportError:
+        import retention
+    # Same lock order as queue mutation; publication releases catalog before update.
+    with locked():
+        with locked('catalog'):
+            return retention.prune(DATA,STANDARD,read(CATALOG),jobs(),dry_run=dry_run)
+
+def cleanup_safely():
+    try:
+        cleanup()
+    except Exception:
+        # A cleanup error must never turn a published result into a compute failure.
+        traceback.print_exc()
 
 
 def schedule(rows,running):
@@ -213,6 +283,7 @@ def schedule(rows,running):
         available=next(int(l.split()[1])*1024 for l in Path('/proc/meminfo').read_text().splitlines() if l.startswith('MemAvailable:'))
         if available<1500*1024**2:r['stage']='메모리 여유 대기';break
         directory=JOBS/r['id'];directory.mkdir(exist_ok=True)
+        write(directory/'JOB.json',dict(id=r['id'],episode=r['episode'],tcp_lowering_cm=r.get('tcp_lowering_cm',0.),tcp_lowering_frame='box_tag'))
         with (directory/'worker.log').open('ab') as log:
             process=subprocess.Popen([PYTHON,str(Path(__file__).resolve()),'work',r['episode'],r['id']],
                 env=dict(os.environ,KUAVO_DATA=str(DATA.parent),OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1',MUJOCO_GL='egl'),
@@ -231,18 +302,23 @@ def supervise():
         for r in rows.values():
             if r['status']=='running':r.update(status='failed',stage='계산 서비스가 재시작되어 중단됨')
         write(JOBS/'jobs.json',rows)
+    cleanup_safely()
     running={}
     while True:
         with locked():
             rows=jobs()
+            completed=any(p.poll() is not None for p in running.values())
             schedule(rows,running)
             write(JOBS/'jobs.json',rows)
+        if completed:cleanup_safely()
         time.sleep(1)
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('command',choices=['supervise','work']);parser.add_argument('episode',nargs='?');parser.add_argument('job',nargs='?');a=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('command',choices=['supervise','work','cleanup','cleanup-dry-run']);parser.add_argument('episode',nargs='?');parser.add_argument('job',nargs='?');a=parser.parse_args()
     if a.command=='supervise':supervise()
+    elif a.command.startswith('cleanup'):
+        print(json.dumps(dict(removed=cleanup(dry_run=a.command=='cleanup-dry-run')),ensure_ascii=False,indent=2))
     else:
         try:worker(a.episode,a.job)
         except Exception:

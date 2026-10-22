@@ -41,5 +41,71 @@
     "criteria_unchanged": true,
     "interpolation": "Same two-keyframe Slerp with exact phase/context/base cache keys",
     "refinement_cache": "Reuse only bit-identical coordinates at the same source phase within one run"
+  },
+  "workflow": {
+    "revision": "2026-10-22",
+    "height_reference": {
+      "frame": "fixed_rack_height",
+      "tag_centers_m": {
+        "0": 1.615,
+        "4": 1.615,
+        "1": 1.615,
+        "2": 1.0,
+        "5": 1.0,
+        "3": 1.0
+      },
+      "method": "least_squares_common_z_translation",
+      "robot_observation_used": false,
+      "max_residual_m": 0.02,
+      "legacy_transform_key": "T_base_recording"
+    },
+    "tcp_offset": {
+      "default_cm": 3.0,
+      "frame": "box_tag",
+      "axis": "-Y",
+      "scope": "both TCP positions throughout source phase",
+      "vertical_fallback": false,
+      "missing_axis": "reject"
+    },
+    "gripper": {
+      "close_at_open_fraction": 0.4,
+      "inclusive": true,
+      "closed_open_fraction": 0.0,
+      "claw_position": 100,
+      "apply_after_interpolation": true,
+      "raw_values_unchanged": true,
+      "legacy_payload_policy": "explicit threshold retained; absent policy unchanged"
+    },
+    "preview": {
+      "panels": [
+        "external RGB",
+        "My view",
+        "whole body + Kuavo",
+        "side view"
+      ],
+      "closed_indicator": "red finger/contact meshes only; no CLOSE caption",
+      "side_camera": {
+        "azimuth_base_deg": -90,
+        "elevation_deg": -8,
+        "distance_m": 2.65,
+        "lookat_forward_m": 0.4,
+        "lookat_z_m": 0.95,
+        "human_skeleton": false
+      }
+    },
+    "live_preview": {
+      "head_buffer": "common.LINK.frame('head')",
+      "head_endpoint": "/kuavo/cam/head",
+      "tag_topic": "/rwh/tag_detections",
+      "single_tag_projection": true,
+      "single_tag_robot_alignment": false,
+      "tag_failure_stops_video": false
+    },
+    "input_preparation": {
+      "discard_recording_tail_s": 2,
+      "standard_nominal_arm_seed": true,
+      "always_start_from_original_descriptor": true
+    },
+    "physical_execution_validated": false
   }
 }

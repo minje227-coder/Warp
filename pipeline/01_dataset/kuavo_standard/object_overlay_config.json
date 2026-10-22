@@ -96,7 +96,55 @@
       "100": 0.0,
       "101": -0.044749254981557816
     },
-    "tag_layout_calibration": "box_tag_calibration.json"
+    "tag_layout_calibration": "box_tag_calibration.json",
+    "instances": [
+      {
+        "tag_offsets_in_front_face_axes_m": {
+          "100": [
+            -0.0975,
+            0.076,
+            0.0
+          ],
+          "101": [
+            0.0869765487967015,
+            0.07074376449132885,
+            0.0
+          ]
+        },
+        "tag_inplane_rotations_rad": {
+          "100": 0.0,
+          "101": -0.044749254981557816
+        },
+        "tag_layout_calibration": "box_tag_calibration.json",
+        "id": "box_100_A13",
+        "layout_provenance": "existing adopted calibration for this instance"
+      },
+      {
+        "id": "box_110_A13",
+        "tag_offsets_in_front_face_axes_m": {
+          "110": [
+            -0.0975,
+            0.076,
+            0.0
+          ],
+          "111": [
+            0.0975,
+            0.076,
+            0.0
+          ]
+        },
+        "tag_inplane_rotations_rad": {
+          "110": 0.0,
+          "111": 0.0
+        },
+        "tag_layout_calibration": null,
+        "layout_provenance": "nominal standard A13 paper-edge placement; not the 100/101 image calibration"
+      }
+    ],
+    "missing_observation_policy": "hold_last_valid_pose",
+    "before_first_observation": "unknown",
+    "observation_scope": "full_episode",
+    "maximum_hold_s": null
   },
   "pose_selection": {
     "minimum_tag_y_up_component": 0.65,

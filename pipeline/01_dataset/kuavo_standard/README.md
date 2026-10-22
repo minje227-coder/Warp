@@ -1,6 +1,6 @@
 # WiLoR → KUAVO adopted standard
 
-WiLoR/Meta의 녹화별 준비된 입력을 KUAVO S63 궤적으로 변환하는 채택 소스·설정입니다.
+이 디렉터리는 녹화별 준비된 WiLoR/Meta 입력을 KUAVO S63 궤적으로 변환하는 lab6 채택 runtime입니다.
 **계산·검증·4분할 렌더링은 이 standard를 사용합니다.**
 
 ## 실행
@@ -26,15 +26,31 @@ bash scripts/02_convert/convert_episode_standard.sh /path/to/episode
 | [object_overlay_config.json](object_overlay_config.json), [tag_policy.json](tag_policy.json) | 랙·박스 추정과 태그 배치 |
 | [box_tag_calibration.json](box_tag_calibration.json) | 승인된 고정 박스 태그 보정·출처 |
 | [tools/build_tag_world.py](tools/build_tag_world.py) | 해당 녹화의 태그 관측으로 world 준비 |
-| [SNAPSHOT_SHA256.json](SNAPSHOT_SHA256.json) | 소스·설정 파일 해시 |
+| [SNAPSHOT_SHA256.json](https://github.com/minje227-coder/Warp/blob/main/pipeline/01_dataset/kuavo_standard/SNAPSHOT_SHA256.json) | 소스·설정 파일 해시 |
 
-녹화·생성 궤적·영상은 이 소스 디렉터리에 포함하지 않습니다.
+배포 소스 저장소에는 녹화·생성 궤적·영상을 포함하지 않습니다.
 
 ## 상세 문서
 
-- [실행 방법·입력 계약·현재 정책](../../../docs/RETARGETING_STANDARD.md)
-- [검증 결과·측정 범위](../../../docs/RETARGETING_VALIDATION.md)
-- [프로젝트 시작 안내](../../../README.md)
+- [실행 방법·입력 계약·현재 정책](https://github.com/minje227-coder/Warp/blob/main/docs/RETARGETING_STANDARD.md)
+- [검증 결과·측정 범위](https://github.com/minje227-coder/Warp/blob/main/docs/RETARGETING_VALIDATION.md)
+- [프로젝트 시작 안내](https://github.com/minje227-coder/Warp/blob/main/README.md)
+
+## Two box instances and missing observations (2026-10-19)
+
+Track A13 objects `box_100_A13` (tags 100/101) and `box_110_A13` (110/111)
+independently. Keep the existing 100/101 fixed calibration. The 110/111 instance
+uses the nominal A13 paper-edge slot layout; it does not reuse the 100/101 image
+calibration. Both use the standard 265 x 185 x 222 mm open-top box geometry.
+Read tag observations over the full episode. Preserve the existing PnP/head-pose
+acceptance gates and +/-0.3 s observation smoothing, then hold the last valid pose
+for each object separately until reacquisition. Before its first observation an
+object is unknown; never fill its prefix from the future. Missing observations
+do not abort extraction. Prepared collision worlds must contain both observed
+objects over their requested interval, each as five 1 mm plates. A held pose is
+recorded as held with its observation age, not claimed to be a new measurement.
+Full-episode observations and object states are retained in the preparation data.
+Existing validated trajectories and CURRENT.json are preserved.
 
 ## Constrained path revision (2026-10-20)
 
@@ -82,3 +98,16 @@ concurrent runs on lab6; these timings exclude IK and video. All 19,222 sample
 records and the source-knot checks matched exactly; P/V/A arrays, MoveIt inputs
 and MoveIt summaries were also identical. All 42 previously rejected sample
 states remained rejected. Twenty focused unit tests passed.
+
+
+## 2026-10-22 current workflow
+
+The adopted workflow is recorded in `STANDARD.json.workflow` and
+[the current guide](../../../docs/RETARGETING_STANDARD.md).
+Surveyed rack centers 0/4/1=1.615m and 2/5/3=1.000m replace robot-observed offline height calibration.
+New dashboard jobs default to 3cm along the associated box tag -Y, with no world-vertical fallback.
+Interpolated gripper openings <=40% close fully. Preview marks contact fingers red only,
+removes CLOSE text and uses a lower-right side camera with that window's human skeleton off.
+Live retargeting RGB shares the dashboard head buffer; single-tag fits allow projection only.
+The original IK/refinement/TOPPRA/verification profile remains in force.
+Policy adoption does not rewrite CURRENT or certify physical execution; consult the validation guide for failed 3cm recordings.

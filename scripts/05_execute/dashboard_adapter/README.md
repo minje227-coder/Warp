@@ -25,7 +25,7 @@ success/failure only after saving. Manual/team recording and VR nodes are unchan
 The read-only head observer and compatibility executor paths in `robot/agent/`
 point to Warp. Offline computation is a thin CLI launcher as well; it invokes the
 same adopted standard through Warp's queue and keeps the existing live data root.
-The four-window renderer, adopted pipeline, raw input and CURRENT remain unchanged.
+The 2026-10-22 adopted renderer uses red closed contact fingers and a lower-right side view. Raw inputs and CURRENT selection are retained. The installer also includes the matching UI, routes, shared-head display and 3cm box-axis default.
 
 See Warp's `scripts/05_execute/README.md` for implementation and protocol details.
 

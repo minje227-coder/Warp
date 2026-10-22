@@ -26,10 +26,23 @@ def target(detail):
     fractions = vector([g.get('open_fraction') if isinstance(g, dict) else None for g in grips], 2, '그리퍼')
     if any(not 0 <= v <= 1 for v in fractions):
         raise ValueError('그리퍼 열림 비율이 범위를 벗어났습니다.')
-    limits = dict(velocity=[math.radians(2)]*4+[5.14]*14,
-                  acceleration=[math.radians(4)]*4+[25.]*14)
+    fractions = [0. if v <= .40 else v for v in fractions]
+    limits = dict(velocity=[3.14]*4+[5.14]*14,
+                  acceleration=[5.14]*4+[25.]*14)
     return dict(q=q, joint_names=NAMES, limits=limits, base_pose=vector(initial.get('base_pose'), 3, '시작 베이스'),
-                claw=[100*(1-v) for v in fractions], source_s=float(initial['source_s']), arm_duration_s=3., head_excluded=True)
+                claw=[100*(1-v) for v in fractions], source_s=float(initial['source_s']), arm_duration_s=2., head_excluded=True)
+
+
+
+def topic_fresh(topic, snapshot, now, limit):
+    # Agent timestamps its snapshot before decoding topics. A callback during
+    # decoding may therefore be newer than snapshot.t (observed -0.08 s).
+    # Bound that race; never let a negative age extend stale snapshot validity.
+    elapsed=now-snapshot['t']
+    age=topic['age']
+    return (isinstance(age,(int,float)) and math.isfinite(age)
+            and 0<=elapsed<1.5 and -.25<=age
+            and elapsed+max(0.,age)<limit)
 
 
 def feedback_matches(target_state, snapshot, now):
@@ -40,7 +53,7 @@ def feedback_matches(target_state, snapshot, now):
         claw = topics['/leju_claw_state']
         # RobotLink topic stamps are wall-clock arrival times, not ROS stamps.
         if (not 0 <= now-snapshot['t'] < 1.5
-                or any(not 0 <= x['age'] < 1.0 for x in (sensor, claw))):
+                or any(not topic_fresh(x,snapshot,now,1.) for x in (sensor, claw))):
             return False
         q = sensor['data']['joint_data']['joint_q'][:18]
         grip = claw['data']['data']['position']
@@ -57,7 +70,7 @@ def base_feedback_matches(goal,frame,snapshot,now):
     try:
         goal=vector(goal,3,'고정 베이스 목표')
         odom=snapshot['topics']['/odom'];data=odom['data']
-        if not 0<=now-snapshot['t']<1.5 or not 0<=odom['age']<.5:return False
+        if not topic_fresh(odom,snapshot,now,.5):return False
         if data['header']['frame_id']!=frame:return False
         p=data['pose']['pose']['position'];q=data['pose']['pose']['orientation']
         yaw=math.atan2(2*(q['w']*q['z']+q['x']*q['y']),1-2*(q['y']**2+q['z']**2))

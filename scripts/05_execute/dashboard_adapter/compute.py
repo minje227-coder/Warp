@@ -8,6 +8,10 @@ backend = module('compute')
 backend.DATA = Path(datadir.path('retargeting'))
 backend.CATALOG = backend.DATA/'catalog.json'
 backend.JOBS = backend.DATA/'compute'
+if __name__ != '__main__':
+    from tabs.retargeting import retargeting as episodes
+    from tabs.retargeting.warp_backend import module as warp_module
+    backend.CALIBRATION_CAPTURE = lambda key: warp_module('calibration').capture(episodes, key)
 if __name__ == '__main__':
     backend.main()
 else:

@@ -15,12 +15,12 @@ import sys
 import threading
 import time
 
-LINEAR_MAX=.05
-ANGULAR_MAX=math.radians(3)
+LINEAR_MAX=.03
+ANGULAR_MAX=math.radians(2)
 LINEAR_ACCEL=.04
 ANGULAR_ACCEL=math.radians(3)
-POSITION_TOL=.02
-YAW_TOL=math.radians(2)
+POSITION_TOL=.01
+YAW_TOL=math.radians(1)
 MAX_DISTANCE=.75
 MAX_YAW=math.radians(45)
 LEASE_S=1.0
@@ -28,13 +28,12 @@ VISION_S=1.5
 TIMEOUT_S=120
 NAMES=['knee_joint','leg_joint','waist_pitch_joint','waist_yaw_joint']+[
     'zarm_%s%d_joint'%(s,i) for s in 'lr' for i in range(1,8)]
-# Direct torso+arm joint replay contract. quickMode selects which joint targets
-# override MPC output; it does not set the preparation or replay speed.
-JOINT_CONTROL_MODES=dict(mpc=3,arm=2,quick=3)
-# Bootstrap with the normal arm mode-switch path. Only after ROS input has
-# been selected and primed do preparation/replay select direct quickMode 3.
+# Both joint topics feed the existing MPC reference manager. Keep its planned
+# output active instead of replacing it with the quick-mode joint targets.
+JOINT_CONTROL_MODES=dict(mpc=3,arm=2,quick=0)
+# Preparation and replay share the normal MPC route.
 PREPARATION_CONTROL_MODES=dict(mpc=3,arm=2,quick=0)
-EXECUTOR_VERSION='warp-rwh-topics-v1'
+EXECUTOR_VERSION='warp-visual-align-v2'
 QUICK_SERVICE_MD5='8f6c979af573879a9cb6f5c0c50c2be4'
 ARM_LINK_SERVICE='/humanoid_wheel/set_incremental_arm_traj_link'
 ARM_LINK_MD5='c50718844f9433e81f666d6ef58a2c25'
@@ -229,13 +228,13 @@ class Stationarity:
         self.span_deg=max(math.degrees(max(row[1][i] for row in self.rows)-min(row[1][i] for row in self.rows)) for i in range(18))
         self.drift_deg_s=max(math.degrees(abs(q[i]-self.rows[0][1][i]))/duration for i in range(18))
         self.rms_deg_s=max(math.degrees(math.sqrt(sum(row[2][i]**2 for row in self.rows)/len(self.rows))) for i in range(18))
-        return self.span_deg<=.3 and self.drift_deg_s<=.3 and self.rms_deg_s<=2.
+        return self.span_deg<=.3 and self.drift_deg_s<=.3 and self.rms_deg_s<=3.
 
 CLAW_POSITION_TOL=8.  # Same bound as first_state.feedback_matches, plus hardware done state.
 
 
 class JointBridge:
-    """Slow torso quintic and init_pose-style three-second arm smoothstep.
+    """Slow torso quintic and init_pose-style two-second arm smoothstep.
 
     Only the 18 torso/arm joints are interpolated. Actual feedback, not elapsed
     command time, decides arrival. Head is excluded from commands and arrival.
@@ -249,15 +248,15 @@ class JointBridge:
         speed=finite_vector(target['limits']['velocity'],18)
         accel=finite_vector(target['limits']['acceleration'],18)
         if any(x<=0 for x in speed+accel):raise ValueError('속도·가속도 제한 오류')
-        speed[:4]=[min(x,math.radians(2)) for x in speed[:4]]
-        accel[:4]=[min(x,math.radians(4)) for x in accel[:4]]
+        speed[:4]=[min(x,3.14) for x in speed[:4]]
+        accel[:4]=[min(x,5.14) for x in accel[:4]]
         delta=[abs(b-a) for a,b in zip(self.start,self.goal)]
-        self.arm_duration=3.0
+        self.arm_duration=2.0
         self.body_duration=max([2.]+[1.875*delta[i]/speed[i] for i in range(4)]+
                               [math.sqrt(10/math.sqrt(3)*delta[i]/accel[i]) for i in range(4)])
         for i in range(4,18):
             if 1.5*delta[i]/self.arm_duration>speed[i] or 6*delta[i]/self.arm_duration**2>accel[i]:
-                raise ValueError('팔 3초 이동이 속도·가속도 한계를 넘습니다: '+NAMES[i])
+                raise ValueError('팔 2초 이동이 속도·가속도 한계를 넘습니다: '+NAMES[i])
         self.duration=max(self.body_duration,self.arm_duration)
         if self.duration>120:raise ValueError('첫 자세 연결 시간이 120초를 넘습니다.')
         self.settled=None;self.still=Stationarity()
@@ -333,6 +332,7 @@ class ReplayPath:
         self.t=finite_vector(data.get('execution_s'),len(data.get('execution_s',[])))
         if (len(self.t)<2 or len(self.t)>100000 or any(not 0<b-a<=.021 for a,b in zip(self.t,self.t[1:]))):
             raise ValueError('replay 실행 시각/100Hz 표본 오류')
+        self.gripper_close_fraction = data.get('gripper_policy', {}).get('close_at_open_fraction')
         self.p=[];self.v=[];self.a=[];self.claw=[]
         self.vmax=finite_vector(data['velocity_limits'],21)
         self.amax=finite_vector(data['acceleration_limits'],21)
@@ -360,7 +360,10 @@ class ReplayPath:
         t=min(self.t[-1],max(self.t[0],execution_s))
         j=max(0,min(len(self.t)-2,bisect.bisect_right(self.t,t)-1))
         u=(t-self.t[j])/(self.t[j+1]-self.t[j])
-        return tuple([a+(b-a)*u for a,b in zip(rows[j],rows[j+1])] for rows in (self.p,self.v,self.a,self.claw))
+        sampled=tuple([a+(b-a)*u for a,b in zip(rows[j],rows[j+1])] for rows in (self.p,self.v,self.a,self.claw))
+        if self.gripper_close_fraction is not None:
+            sampled=sampled[:3]+([100. if v>=100*(1-self.gripper_close_fraction) else v for v in sampled[3]],)
+        return sampled
 
     def elapsed(self, elapsed):
         return self.sample(self.begin+min(self.duration,max(0.,elapsed)))
@@ -380,16 +383,18 @@ def predict_pose(pose, stamp, now, history):
     return [x+y*max(0.,now-prev) for x,y in zip(p,velocity)]
 
 
-def replay_base(p,v,pose,last,dt,vmax,amax):
-    error=[p[0]-pose[0],p[1]-pose[1],wrap(p[2]-pose[2])]
-    if math.hypot(*error[:2])>.10 or abs(error[2])>math.radians(8):
-        raise ValueError('replay 베이스 추종 오차가 10cm·8°를 넘었습니다.')
+def replay_base(p,v,last,dt,vmax,amax):
+    """Recorded world velocity -> body command using recorded yaw only.
+
+    Replay has no rack/vision position feedback, correction or error gate.
+    Existing validated velocity and acceleration limits still apply.
+    """
     world=[]
     for i in range(3):
-        want=max(-vmax[i],min(vmax[i],v[i]+.6*error[i]))
+        want=max(-vmax[i],min(vmax[i],v[i]))
         world.append(last[i]+max(-amax[i]*dt,min(amax[i]*dt,want-last[i])))
-    c,s=math.cos(pose[2]),math.sin(pose[2])
-    return [c*world[0]+s*world[1],-s*world[0]+c*world[1],world[2]],world,error
+    c,s=math.cos(p[2]),math.sin(p[2])
+    return [c*world[0]+s*world[1],-s*world[0]+c*world[1],world[2]],world
 
 
 class Tracker:
@@ -448,34 +453,31 @@ class Tracker:
         close=math.hypot(*e[:2])<=POSITION_TOL and abs(e[2])<=YAW_TOL
         visual_good=sum(now-t<VISION_S for t in self.good_frames)>=3
         if close:
-            self.last=[0.,0.,0.]
+            self.last=command([0.,0.,0.],self.last,dt)
             if self.settled_at is None:self.settled_at=now
-            return self.last,visual_good and now-self.settled_at>=1.,"도착·정지 확인 중"
+            return self.last,visual_good and self.last==[0.,0.,0.] and now-self.settled_at>=1.,"도착·정지 확인 중"
         self.settled_at=None
         self.last=command(e,self.last,dt)
         self.travel+=math.hypot(*self.last[:2])*dt
         return self.last,False,"천천히 정렬 중"
 
 
-class SnapshotTracker(Tracker):
-    """Freeze rack goal before any motion, then measure travel in local odom."""
+class VisualTracker(Tracker):
+    """Rack feedback owns alignment; odom verifies stopping and later drift only."""
     def __init__(self):
         super().__init__()
-        self.frozen=False;self.goal=None;self.odom_pose=None;self.odom_v=None
-        self.odom_at=None;self.odom_stamp=None;self.odom_frame=None
-
-    def observation(self,data,now):
-        if self.frozen:self.input_at=now;return
-        super().observation(data,now)
+        self.odom_pose=None;self.odom_v=None;self.odom_at=None
+        self.odom_stamp=None;self.odom_frame=None;self.stopped_at=None
 
     def heartbeat(self,now):
-        if self.frozen:self.input_at=now
+        # Preparation must keep receiving distinct timestamp-matched rack frames.
+        if self.replaying:self.input_at=now
 
     def odometry(self,pose,velocity,stamp,frame,now):
         pose=finite_vector(pose,3);velocity=finite_vector(velocity,3)
         if not isinstance(stamp,int) or stamp<=0:return
         if self.odom_stamp is not None and stamp<=self.odom_stamp:return
-        if self.frozen and self.odom_pose is not None:
+        if self.odom_pose is not None and not self.replaying:
             dt=now-self.odom_at
             if frame!=self.odom_frame:raise ValueError('이동 중 odom 좌표계가 바뀌었습니다.')
             if (math.hypot(pose[0]-self.odom_pose[0],pose[1]-self.odom_pose[1])>.03+2*LINEAR_MAX*dt
@@ -484,52 +486,28 @@ class SnapshotTracker(Tracker):
         self.odom_pose=pose;self.odom_v=velocity;self.odom_at=now
         self.odom_stamp=stamp;self.odom_frame=frame
 
-    def freeze(self,now):
-        if not self.ready or self.vision_at is None or now-self.vision_at>VISION_S:
-            raise ValueError('초기 랙 위치를 안정적으로 확인하지 못했습니다.')
-        if self.odom_at is None or now-self.odom_at>.3:raise ValueError('초기 상대 이동용 odom 피드백 없음')
-        if math.hypot(*self.odom_v[:2])>.02 or abs(self.odom_v[2])>math.radians(1):
-            raise ValueError('베이스가 정지한 뒤 초기 위치를 확정하세요.')
-        samples=[v for _,v in self.samples]
-        ex=sum(v[0] for v in samples)/len(samples);ey=sum(v[1] for v in samples)/len(samples)
-        ea=math.atan2(sum(math.sin(v[2]) for v in samples),sum(math.cos(v[2]) for v in samples))
-        x,y,a=self.odom_pose;c,si=math.cos(a),math.sin(a)
-        self.goal=[x+c*ex-si*ey,y+si*ex+c*ey,wrap(a+ea)]
-        self.initial_error=[ex,ey,ea];self.frozen=True;self.last=[0.,0.,0.]
-        return list(self.goal)
-
     def step(self,now,dt):
-        if self.replaying or not self.frozen:return super().step(now,dt)
-        if not 0<dt<=.25:raise ValueError('유효하지 않은 제어 주기')
-        if self.input_at is None or now-self.input_at>LEASE_S:raise ValueError('대시보드 제어 연결이 끊겨 정지합니다')
-        if self.odom_at is None or now-self.odom_at>.3:raise ValueError('상대 이동 odom 피드백이 끊겼습니다.')
-        if now-self.first_input_at>TIMEOUT_S:raise ValueError('정렬 제한 시간 초과')
-        e=relative(self.odom_pose,self.goal);self.visual=e
-        if self.travel>MAX_DISTANCE+.15 or math.hypot(*e[:2])>MAX_DISTANCE+.15:
-            raise ValueError('고정한 상대 이동 범위를 벗어났습니다.')
-        self.last=command(e,self.last,dt);self.travel+=math.hypot(*self.last[:2])*dt
-        close=(math.hypot(*e[:2])<=POSITION_TOL and abs(e[2])<=YAW_TOL
-               and math.hypot(*self.odom_v[:2])<=.005 and abs(self.odom_v[2])<=math.radians(.5)
-               and math.hypot(*self.last[:2])<=.002 and abs(self.last[2])<=math.radians(.2))
-        if not close:self.settled_at=None
-        elif self.settled_at is None:self.settled_at=now
-        return self.last,close and now-self.settled_at>=1.,'초기 고정 목표로 이동 · odom 도착 확인'
-
-
-    def pose_arrival(self,now):
-        """Read-only arrival test for the single /cmd_pose already sent."""
-        if not self.frozen:raise ValueError('고정된 베이스 목표가 없습니다.')
-        if self.input_at is None or now-self.input_at>LEASE_S:raise ValueError('대시보드 제어 연결 소실')
-        if self.odom_at is None or now-self.odom_at>.3:raise ValueError('상대 이동 odom 피드백 소실')
-        if now-self.first_input_at>TIMEOUT_S:raise ValueError('정렬 제한 시간 초과')
-        self.visual=relative(self.odom_pose,self.goal)
-        if math.hypot(*self.visual[:2])>MAX_DISTANCE+.15 or abs(self.visual[2])>MAX_YAW+math.radians(10):
-            raise ValueError('고정한 상대 이동 범위를 벗어났습니다.')
-        close=(math.hypot(*self.visual[:2])<=POSITION_TOL and abs(self.visual[2])<=YAW_TOL
+        if self.odom_at is None or now-self.odom_at>.3:
+            raise ValueError('정지 확인용 odom 피드백이 끊겼습니다.')
+        velocity,_,message=super().step(now,dt)
+        quiet=(self.ready and velocity==[0.,0.,0.]
+               and math.hypot(*self.visual[:2])<=POSITION_TOL and abs(self.visual[2])<=YAW_TOL
                and math.hypot(*self.odom_v[:2])<=.005 and abs(self.odom_v[2])<=math.radians(.5))
-        if not close:self.settled_at=None
-        elif self.settled_at is None:self.settled_at=now
-        return close and now-self.settled_at>=1.
+        if not quiet:
+            self.stopped_at=None
+            return velocity,False,message
+        if self.stopped_at is None:self.stopped_at=now
+        # Require fresh camera exposures AFTER measured stop, not frames from
+        # the approach or repeated copies of the last good frame.
+        # The newest frame's freshness is checked by step(). At ~2 Hz, three
+        # post-stop exposures may span >1.5 s once transport latency is included.
+        good=sum(self.stopped_at<=t<=now for t in self.good_frames)
+        arrived=good>=3 and now-self.stopped_at>=1.
+        return velocity,arrived,'랙 기준 도착 · 정지 후 새 영상 확인 중'
+
+    def arrival_anchor(self):
+        """Record the reached pose solely to revoke completion after later drift."""
+        return list(self.odom_pose)
 
 
 
@@ -548,7 +526,7 @@ def main():
     from kuavo_msgs.srv import changeArmCtrlMode,changeTorsoCtrlMode
     changeLbQuickModeSrv=quick_service_type();SetIncrementalArmTrajLink=arm_link_service_type()
     rospy.init_node('kuavo_dashboard_retargeting_align',anonymous=True,disable_signals=True)
-    done=threading.Event();lock=threading.RLock();tracker=SnapshotTracker();arm_feedback=ArmModeFeedback()
+    done=threading.Event();lock=threading.RLock();tracker=VisualTracker();arm_feedback=ArmModeFeedback()
     state=dict(mode=None,mode_at=0,disabled=None,enabled=None,transport=None,transport_at=0,failure=None,target=None,
                replay=None,q=None,v=None,q_at=0,claw=None,claw_state=None,claw_at=0,claw_stamp=0,reach=None,stop_reason='정렬 시작/이동 취소')
     def stop_signal(number,*_):
@@ -661,9 +639,9 @@ def main():
                 arm_feedback.error=str(exc);getter=None
             done.wait(.5)
     threading.Thread(target=read_arm_mode,daemon=True).start()
-    base_pub=base_pose_pub=arm_pub=torso_pub=claw_pub=None;torso_model=None;pose_sent_at=None;plan=None
+    base_pub=arm_pub=torso_pub=claw_pub=None;torso_model=None;plan=None
     success=False;activated=False;entered=False;arm_service=None;prev_arm=None;replay_clock=None
-    mpc_service=None;quick_service=None;prev_mpc=None;mpc_changed=False
+    mpc_service=None;quick_service=None;prev_mpc=None;mpc_changed=False;replay_quick_requested=False
     commanded=None;last_claw=None;link_ready=False
 
     def guard(now,require_mpc=True):
@@ -684,7 +662,7 @@ def main():
         if len(state['claw_state'])!=2 or any(x<0 for x in state['claw_state']):
             raise ValueError('그리퍼 오류 상태입니다.')
         if state['replay'] is None and (tracker.odom_at is None or now-tracker.odom_at>.3):
-            raise ValueError('최신 상대 이동용 odom 피드백이 없습니다.')
+            raise ValueError('최신 정지 확인용 odom 피드백이 없습니다.')
         if entered and arm_mode!=2:
             raise ValueError('팔 제어권이 바뀌었습니다.')
 
@@ -700,6 +678,33 @@ def main():
         m=JointState();m.header.stamp=rospy.Time.now();m.name=NAMES[4:];m.position=arm
         if plan:m.velocity=rates[1]
         arm_pub.publish(m)
+
+    def wait_joint_stop():
+        if target.get('stationary_confirmed') is True:return
+        emit(stage='몸통·팔 정지 안정화 확인 중 · 3°/s',velocity=[0,0,0])
+        deadline=time.monotonic()+5.;still=Stationarity();last_stamp=None
+        while not done.is_set():
+            now=time.monotonic()
+            with lock:
+                guard(now)
+                if tracker.input_at is None or now-tracker.input_at>LEASE_S:
+                    raise ValueError('정지 확인 중 페이지 연결 소실')
+                actual=list(state['q']);velocity=list(state['v']);stamp=state['q_stamp']
+            # Require a fresh measured window, not one velocity sample directly
+            # after the controller's hold/transition. No commands in this wait.
+            if stamp!=last_stamp:
+                last_stamp=stamp
+                if still.update(actual,velocity,now):
+                    emit(stage='관절 정지 확인 완료',stationary_span_deg=still.span_deg,
+                         stationary_drift_deg_s=still.drift_deg_s,stationary_rms_deg_s=still.rms_deg_s)
+                    return
+            if now>=deadline:
+                j=max(range(18),key=lambda i:abs(velocity[i]))
+                raise ValueError('몸통·팔 정지 확인 시간 초과: %s %.2f°/s · RMS %s°/s'%(
+                    NAMES[j],math.degrees(abs(velocity[j])),
+                    '?' if still.rms_deg_s is None else '%.2f'%still.rms_deg_s))
+            done.wait(.02)
+        raise ValueError('정지 확인 취소')
 
     def send_claw(values):
         m=lejuClawCommand();m.header.stamp=rospy.Time.now();m.data.name=['left_claw','right_claw'];m.data.position=list(values)
@@ -723,7 +728,7 @@ def main():
                 first=plan.elapsed(0)[0]
                 if max(abs(a-b) for a,b in zip(first[3:],target['q']))>1e-8:
                     raise ValueError('replay 첫 자세와 정렬 목표 불일치')
-                if max(abs(a-b) for a,b in zip(state['q'],first[3:]))>math.radians(1.5):
+                if max(abs(a-b) for a,b in zip(state['q'],first[3:]))>math.radians(3):
                     raise ValueError('replay 첫 자세로 다시 정렬하세요.')
             # Reject out-of-limit goals rather than clamping to a different state.
             model_xml=rospy.get_param('/robot_description');torso_model=TorsoModel(model_xml)
@@ -735,9 +740,9 @@ def main():
                         or not float(limit.get('lower'))<=current<=float(limit.get('upper'))):
                     raise ValueError('시작 관절 한계 오류: '+name)
                 if not plan and NAMES.index(name)>=4:
-                    peak=1.5*abs(value-current)/3.
+                    peak=1.5*abs(value-current)/2.
                     if limit.get('velocity') is not None and peak>float(limit.get('velocity'))+1e-8:
-                        raise ValueError('팔 3초 이동이 URDF 속도 한계를 넘습니다: '+name)
+                        raise ValueError('팔 2초 이동이 URDF 속도 한계를 넘습니다: '+name)
                 if plan and any(not float(limit.get('lower'))<=row[3+NAMES.index(name)]<=float(limit.get('upper')) for row in plan.p):
                     raise ValueError('replay 관절 한계 오류: '+name)
         if not plan:
@@ -750,10 +755,7 @@ def main():
                         raise ValueError('초기 관측 중 페이지 연결이 끊겼습니다.')
                 if time.monotonic()>deadline:raise ValueError('초기 랙 위치 안정화 시간 초과')
                 done.wait(.02)
-            with lock:frozen_goal=tracker.freeze(time.monotonic())
-            emit(stage='초기 위치 확정 · 상대 이동 목표 고정',vision_locked=True,
-                 base_goal_odom=frozen_goal,base_odom_frame=tracker.odom_frame,
-                 initial_error=tracker.initial_error)
+            emit(stage='랙 위치 안정화 완료 · 다중 태그를 계속 보며 정렬',vision_locked=False)
         # Resolve every required mode service before the base can move.
         for name in ['/wheel_arm_change_arm_ctrl_mode','/change_arm_ctrl_mode']:
             try:rospy.wait_for_service(name,timeout=1);arm_service=rospy.ServiceProxy(name,changeArmCtrlMode);break
@@ -783,43 +785,45 @@ def main():
                 done.wait(.02)
         with lock:guard(time.monotonic())
         base_pub=rospy.Publisher('/cmd_vel',Twist,queue_size=1,latch=False,tcp_nodelay=True)
-        base_pose_pub=None if plan else rospy.Publisher('/cmd_pose',Twist,queue_size=1,latch=False,tcp_nodelay=True)
         torso_pub=(rospy.Publisher('/lb_leg_traj',JointState,queue_size=1,latch=False,tcp_nodelay=True) if plan
                    else rospy.Publisher('/cmd_lb_torso_pose',Twist,queue_size=1,latch=False,tcp_nodelay=True))
         arm_pub=rospy.Publisher('/kuavo_arm_traj',JointState,queue_size=1,latch=False,tcp_nodelay=True)
         claw_pub=rospy.Publisher('/leju_claw_command',lejuClawCommand,queue_size=1,latch=False,tcp_nodelay=True)
         deadline=time.monotonic()+3
-        pubs=[base_pub,torso_pub,arm_pub,claw_pub]+([] if plan else [base_pose_pub])
+        pubs=[base_pub,torso_pub,arm_pub,claw_pub]
         while any(p.get_num_connections()==0 for p in pubs) and time.monotonic()<deadline and not done.is_set():
             done.wait(.02)
         if any(p.get_num_connections()==0 for p in pubs):raise ValueError('베이스·몸통·팔·그리퍼 수신 제어기를 확인하세요.')
         with lock:
             guard(time.monotonic())
             prev_arm=arm_feedback.current(time.monotonic())
-            if target.get('stationary_confirmed') is not True and max(map(abs,state['v']))>math.radians(1):raise ValueError('현재 몸통·팔이 정지한 뒤 다시 시작하세요.')
             bridge=JointBridge(state['q'],target)
             start_claw=list(state['claw'])
         # Use the existing arm authority service; never automatically reacquire
         # control if the operator or another controller takes it away.
-        # Prime the direct-joint caches at the measured pose before selecting
-        # quickMode=3. Otherwise a cached/default torso goal could be applied.
+        # Prime the existing joint reference paths with one fixed measured pose.
+        with lock:handoff_hold=list(state['q'])
         emit(stage='몸통·팔 관절 명령 경로 준비 중',velocity=[0,0,0],stationary_confirmed=target.get('stationary_confirmed') is True)
         for _ in range(5):
             with lock:
                 guard(time.monotonic())
                 if tracker.input_at is None or time.monotonic()-tracker.input_at>LEASE_S:
                     raise ValueError('관절 제어 경로 준비 중 제어 연결이 끊겼습니다.')
-                commanded=list(state['q'])
+                commanded=list(handoff_hold)
             base_pub.publish(Twist());send_joints(commanded);done.wait(.02)
         # Remove the arm quick override BEFORE mode 2 is selected. Otherwise
         # the controller's 200ms hold/transition result is overwritten later.
+        # Already-selected arm mode/transport do not establish quickMode state.
+        # Always select the normal MPC route, including when reusing alignment.
+        if plan:replay_quick_requested=True
         response=quick_service(quickMode=PREPARATION_CONTROL_MODES['quick'])
-        if not response.success:raise ValueError('첫 자세 일반 팔 제어 경로 전환 실패')
+        if not response.success:raise ValueError('일반 MPC 관절 제어 경로 전환 실패')
         emit(stage='팔 외부 제어 모드 2 전환 중',velocity=[0,0,0],previous_arm_mode=prev_arm)
         # Require a fresh query after SET; a stale cached 2 cannot acknowledge it.
         arm_feedback.sample=None
-        response=arm_service(control_mode=2)
-        if not response.result:raise ValueError('팔 외부 제어 모드 전환 실패')
+        if prev_arm!=2:
+            response=arm_service(control_mode=2)
+            if not response.result:raise ValueError('팔 외부 제어 모드 전환 실패')
         entered=True
         # Arm mode and receiver input are separate controls. Mode 2 alone cannot
         # make /kuavo_arm_traj reach WBC while the receiver selects SHM. The
@@ -839,7 +843,7 @@ def main():
                 if state['failure'] or done.is_set() or rospy.is_shutdown():raise ValueError(state['failure'] or state['stop_reason'])
                 if (state['transport']==2 and (not link_switch or state['transport_at']>=link_requested)):
                     link_ready=True;break
-                commanded=list(state['q'])
+                commanded=list(handoff_hold)
             base_pub.publish(Twist());send_joints(commanded,[0.]*18);done.wait(.02)
         if not link_ready:raise ValueError('팔 ROS 궤적 입력 경로 전환 피드백 시간 초과')
         emit(stage='팔 ROS 궤적 입력 경로 확인',arm_transport=2)
@@ -849,12 +853,12 @@ def main():
             with lock:
                 if done.is_set() or state['failure']:raise ValueError('정렬 제어권 확인 취소')
                 if arm_feedback.current(time.monotonic())==2:break
-                commanded=list(state['q'])
+                commanded=list(handoff_hold)
             base_pub.publish(Twist());send_joints(commanded,[0.]*18)
             done.wait(.02)
+        if not plan:wait_joint_stop()
         with lock:
             guard(time.monotonic())
-            if target.get('stationary_confirmed') is not True and max(map(abs,state['v']))>math.radians(1):raise ValueError('몸통·팔 정지 피드백을 확인하세요.')
             bridge=JointBridge(state['q'],target)
             start_claw=list(state['claw'])
         with lock:guard(time.monotonic())
@@ -866,15 +870,40 @@ def main():
             with lock:
                 guard(time.monotonic())
                 if tracker.input_at is None or time.monotonic()-tracker.input_at>LEASE_S:
-                    raise ValueError('직접 관절 입력 준비 중 제어 연결이 끊겼습니다.')
-                commanded=list(state['q'])
+                    raise ValueError('MPC 관절 입력 준비 중 제어 연결이 끊겼습니다.')
+                commanded=list(handoff_hold)
             base_pub.publish(Twist());send_joints(commanded,[0.]*18);done.wait(.02)
         with lock:guard(time.monotonic())
         if plan:
-            response=quick_service(quickMode=JOINT_CONTROL_MODES['quick'])
-            if not response.success:raise ValueError('replay 직접 관절 제어 경로 전환 실패')
+            with lock:
+                guard(time.monotonic())
+                connection_start=list(state['q'])
+            errors=[abs(a-b) for a,b in zip(connection_start,target['q'])]
+            emit(preparation=True,event='replay_handoff',ros_time_ns=rospy.Time.now().to_nsec(),
+                 worker_monotonic_s=time.monotonic(),actual_q=connection_start,hold_q=handoff_hold,
+                 target_q=target['q'],maximum_joint_error_deg=math.degrees(max(errors)))
+            if max(errors)>math.radians(3):
+                j=max(range(18),key=errors.__getitem__)
+                raise ValueError('replay 제어 연결 중 첫 자세 이탈: %s %.2f° (실제 %.2f° / 목표 %.2f°)'%(
+                    NAMES[j],math.degrees(errors[j]),math.degrees(connection_start[j]),math.degrees(target['q'][j])))
+            connection_began=time.monotonic()
+            emit(stage='replay 첫 state에 2초간 부드럽게 연결 중',velocity=[0,0,0])
+            while True:
+                now=time.monotonic();u=min(1.,(now-connection_began)/2.)
+                with lock:
+                    guard(now)
+                    if done.is_set():raise ValueError('replay 첫 state 연결 취소')
+                    if tracker.input_at is None or now-tracker.input_at>LEASE_S:
+                        raise ValueError('replay 첫 state 연결 중 페이지 연결 소실')
+                    actual=list(state['q'])
+                fraction=u*u*(3.-2.*u);slope=3.*u*(1.-u)
+                commanded=[a+(b-a)*fraction for a,b in zip(connection_start,target['q'])]
+                rates=[(b-a)*slope for a,b in zip(connection_start,target['q'])]
+                send_joints(commanded,rates);base_pub.publish(Twist())
+                if u>=1.:break
+                done.wait(.02)
         control_modes=JOINT_CONTROL_MODES if plan else PREPARATION_CONTROL_MODES
-        emit(stage=('replay 시각별 관절 목표 전송 준비' if plan else 'RWH 베이스 상대 목표 · 몸통 자세 · 팔 3초 준비'),
+        emit(stage=('replay MPC 관절 목표 전송 준비' if plan else '랙 시각 피드백 정렬 · 몸통 자세 · 팔 2초 준비'),
              velocity=[0,0,0],control_modes=control_modes,executor=EXECUTOR_VERSION,controller_pva_exact=False)
         with lock:
             guard(time.monotonic())
@@ -882,56 +911,48 @@ def main():
         if plan:
             # The robot must already be at rest at the exact selected beginning.
             # Waiting for stable observations sends only the measured holding pose.
-            deadline=time.monotonic()+5
-            while not tracker.ready:
-                now=time.monotonic()
-                with lock:
-                    guard(now)
-                    if tracker.input_at is None or now-tracker.input_at>LEASE_S or now-tracker.vision_at>VISION_S:
-                        raise ValueError('replay 시작 전 영상·제어 연결 소실')
-                if now>deadline:raise ValueError('replay 시작 전 랙 관측 안정화 실패')
-                base_pub.publish(Twist());send_joints(commanded,[0.]*18);done.wait(.01)
+            commanded=list(target['q'])
+            wait_joint_stop()
             with lock:
                 guard(time.monotonic())
-                first=plan.elapsed(0);base_error=relative(tracker.pose,first[0][:3])
-                if (math.hypot(*base_error[:2])>POSITION_TOL or abs(base_error[2])>YAW_TOL
-                    or max(abs(a-b) for a,b in zip(state['q'],first[0][3:]))>math.radians(1.5)
-                    or (target.get('stationary_confirmed') is not True and max(map(abs,state['v']))>math.radians(1))
+                first=plan.elapsed(0)
+                if (max(abs(a-b) for a,b in zip(state['q'],first[0][3:]))>math.radians(1.5)
                     or max(abs(a-b) for a,b in zip(state['claw'],first[3]))>CLAW_POSITION_TOL):
-                    raise ValueError('replay 첫 state 도착·정지를 다시 확인하세요.')
+                    errors=[abs(a-b) for a,b in zip(state['q'],first[0][3:])]
+                    j=max(range(18),key=errors.__getitem__)
+                    raise ValueError('replay 첫 state 불일치: %s %.2f° · 그리퍼 %.1f%%'%(
+                        NAMES[j],math.degrees(errors[j]),
+                        max(abs(a-b) for a,b in zip(state['claw'],first[3]))))
             began=time.monotonic();replay_clock=began;last=began-.01;last_world=[0.,0.,0.]
             emit(event='replay_start',ros_time_ns=rospy.Time.now().to_nsec(),worker_monotonic_s=began,execution_s=plan.begin,
-                 planned_duration_s=plan.duration,planned_end_execution_s=plan.end,rate=1.)
-            history=collections.deque([(began-2.,last_world)]);settled=None;report=0;replay_still=Stationarity();claw_final_sent=False
+                 planned_duration_s=plan.duration,planned_end_execution_s=plan.end,rate=1.,
+                 base_feedback_enabled=False,base_endpoint_verified=False)
+            settled=None;report=0;replay_still=Stationarity();claw_final_sent=False
             while True:
                 now=time.monotonic();dt=now-last;last=now
                 if not 0<dt<=.05:raise ValueError('replay 100Hz 실행이 50ms 이상 지연되어 정지합니다.')
                 elapsed=now-began
                 with lock:
                     guard(now)
-                    if tracker.input_at is None or now-tracker.input_at>LEASE_S or now-tracker.vision_at>VISION_S:
-                        raise ValueError('replay 중 영상·제어 연결이 끊겼습니다.')
+                    if tracker.input_at is None or now-tracker.input_at>LEASE_S:
+                        raise ValueError('replay 중 제어 연결이 끊겼습니다.')
                     actual=list(state['q']);velocity=list(state['v']);grip=list(state['claw']);grip_state=list(state['claw_state'])
-                    pose=predict_pose(tracker.pose,tracker.vision_at,now,history)
-                    sensor_stamp_ns=state.get('q_stamp');claw_stamp_ns=state.get('claw_stamp_ns');vision_frame_id=str(tracker.frame)
+                    sensor_stamp_ns=state.get('q_stamp');claw_stamp_ns=state.get('claw_stamp_ns');vision_frame_id=None
                 p,v,a,claw=plan.elapsed(elapsed)
                 commanded=p[3:]
                 if max(abs(x-y) for x,y in zip(actual,commanded))>math.radians(10):
                     raise ValueError('replay 관절 추종 오차가 10°를 넘었습니다.')
-                values,last_world,error=replay_base(p,v,pose,last_world,dt,plan.vmax,plan.amax)
+                values,last_world=replay_base(p,v if elapsed<plan.duration else [0.,0.,0.],last_world,dt,plan.vmax,plan.amax)
                 cmd=Twist();cmd.linear.x,cmd.linear.y,cmd.angular.z=values
                 base_pub.publish(cmd);activated=True;send_joints(commanded,v[3:])
                 if elapsed<plan.duration or not claw_final_sent:
                     send_claw(claw)
                     if elapsed>=plan.duration:claw_final_sent=True
-                history.append((now,list(last_world)))
-                while len(history)>2 and history[1][0]<now-2.:history.popleft()
-                # Completion requires fresh, distinct vision frames AFTER the
-                # endpoint and measured joint stopping, not just elapsed time.
+                # Completion verifies joint/claw stopping and zero base command.
+                # The base endpoint is not measured against the rack during replay.
                 end_reached=elapsed>=plan.duration
                 stopped=replay_still.update(actual,velocity,now)
-                close=(end_reached and math.hypot(*error[:2])<=POSITION_TOL and abs(error[2])<=YAW_TOL
-                       and max(abs(x-y) for x,y in zip(actual,commanded))<=math.radians(1.5)
+                close=(end_reached and max(abs(x-y) for x,y in zip(actual,commanded))<=math.radians(1.5)
                        and stopped
                        and max(abs(x-y) for x,y in zip(grip,claw))<=CLAW_POSITION_TOL
                        and len(grip_state)==2 and all(x in (2,3) for x in grip_state)
@@ -940,10 +961,11 @@ def main():
                 elif settled is None:settled=now
                 emit(sample=True,execution_s=min(plan.end,plan.begin+elapsed),elapsed_s=min(elapsed,plan.duration),
                      position=p,velocity_target=v,acceleration_target=a,claw_target=claw,
-                     actual_q=actual,actual_v=velocity,actual_claw=grip,base_pose=pose,base_command=values,
+                     actual_q=actual,actual_v=velocity,actual_claw=grip,base_pose=None,base_command=values,
+                     base_feedback_enabled=False,base_endpoint_verified=False,
                      ros_time_ns=rospy.Time.now().to_nsec(),worker_monotonic_s=now,sensor_stamp_ns=sensor_stamp_ns,
                      claw_stamp_ns=claw_stamp_ns,vision_frame_id=vision_frame_id)
-                if settled is not None and now-settled>=1. and tracker.vision_at>=settled:
+                if settled is not None and now-settled>=1.:
                     success=True;break
                 if elapsed>plan.duration+10:raise ValueError('replay 끝 자세 도착·정지 확인 시간 초과')
                 if now-report>.2:
@@ -952,29 +974,11 @@ def main():
                     report=now
                 done.wait(next_replay_wait(began,time.monotonic()))
         else:
-            with lock:
-                guard(time.monotonic())
-                displacement=relative(tracker.odom_pose,tracker.goal)
-            request=Twist();request.linear.x,request.linear.y,request.angular.z=displacement
-            pose_sent_at=time.monotonic()
-            base_pose_pub.publish(request);activated=True
-            deadline=pose_sent_at+2.
-            while True:
-                with lock:
-                    now=time.monotonic();guard(now)
-                    if tracker.input_at is None or now-tracker.input_at>LEASE_S:raise ValueError('상대 이동 확인 중 페이지 연결 소실')
-                    reached=state['reach']
-                    if reached is not None and reached[1]>=pose_sent_at:
-                        if reached[0]>TIMEOUT_S:raise ValueError('베이스 도착 예정 시간이 실행 한도를 넘었습니다.')
-                        break
-                    commanded=list(state['q'])
-                if now>deadline:raise ValueError('베이스 상대 목표 수신 확인이 없습니다.')
-                send_joints(commanded);done.wait(.02)
-            # RWH's base controller owns the one-shot displacement profile.
-            # Re-sample measured joints only after command acceptance.
+            # Stream only bounded body-frame velocity from CURRENT rack error.
+            # No initial odom goal or one-shot relative pose owns this motion.
             with lock:
                 bridge=JointBridge(state['q'],target);start_claw=list(state['claw'])
-            began=last=time.monotonic();claw_began=None;report=0;posture_done=False;base_done=False;claw_final_sent=False
+            began=last=time.monotonic();claw_began=began;report=0;posture_done=False;base_done=False;claw_final_sent=False
             while True:
                 now=time.monotonic();dt=now-last;last=now
                 if not 0<dt<=.25:raise ValueError('첫 자세 제어 주기가 지연됐습니다.')
@@ -983,18 +987,14 @@ def main():
                     # Keep vision/page leases active through the posture connection.
                     if tracker.input_at is None or now-tracker.input_at>LEASE_S:
                         raise ValueError('첫 자세 이동 중 제어 연결이 끊겼습니다.')
-                    base_done=tracker.pose_arrival(now);values=list(tracker.odom_v)
-                    base_message='RWH 상대 목표 이동 · odom 도착 확인'
+                    values,base_done,base_message=tracker.step(now,dt)
                     actual=list(state['q']);velocity=list(state['v']);grip=list(state['claw']);grip_state=list(state['claw_state'])
+                cmd=Twist();cmd.linear.x,cmd.linear.y,cmd.angular.z=values
+                base_pub.publish(cmd);activated=True
                 elapsed=now-began
                 commanded=bridge.position(elapsed)
-                errors=[abs(a-b) for a,b in zip(actual,commanded)]
-                if max(errors)>math.radians(10):
-                    j=max(range(18),key=errors.__getitem__)
-                    raise ValueError('첫 자세 관절 추종 오차 10° 초과: %s · %.2f초 · 실제 %.2f° / 명령 %.2f° / 목표 %.2f°'%(
-                        NAMES[j],elapsed,math.degrees(actual[j]),math.degrees(commanded[j]),math.degrees(bridge.goal[j])))
                 send_joints(commanded)
-                # Move claws only after the body and arms reach their first pose.
+                # Prepare claws concurrently with the body and arms.
                 stopped=bridge.still.update(actual,velocity,now)
                 joints_close=(elapsed>=bridge.duration and max(abs(a-b) for a,b in zip(actual,bridge.goal))<=math.radians(1.5)
                               and stopped)
@@ -1020,11 +1020,13 @@ def main():
                     stage=('팔·몸통·그리퍼 첫 state 도착 · '+base_message if posture_done else
                            '베이스 정렬 + '+('첫 자세 도착·그리퍼 확인 중' if claw_began is not None else '첫 자세로 천천히 이동 중'))
                     error_deg=math.degrees(max(abs(a-b) for a,b in zip(actual,bridge.goal)))
-                    if not posture_done:stage+=' · 팔 %.1f/3.0초 · 몸통 %.1f/%.1f초 · 관절 오차 %.1f°'%(min(elapsed,3.),min(elapsed,bridge.body_duration),bridge.body_duration,error_deg)
+                    if not posture_done:stage+=' · 팔 %.1f/2.0초 · 몸통 %.1f/%.1f초 · 관절 오차 %.1f°'%(min(elapsed,2.),min(elapsed,bridge.body_duration),bridge.body_duration,error_deg)
                     stage+=' · 정지 RMS %s°/s · 그리퍼 오차 %.1f%%'%(
                         ('%.2f'%bridge.still.rms_deg_s if bridge.still.rms_deg_s is not None else '?'),
                         max(abs(a-b) for a,b in zip(grip,bridge.claw)))
                     emit(stage=stage,velocity=values,base_error=tracker.visual,base_arrived=base_done,posture_arrived=posture_done,
+                         stationary_span_deg=bridge.still.span_deg,stationary_drift_deg_s=bridge.still.drift_deg_s,
+                         stationary_rms_deg_s=bridge.still.rms_deg_s,
                          joint_error_deg=math.degrees(max(abs(a-b) for a,b in zip(actual,bridge.goal))))
                     report=now
                 done.wait(max(.001,.02-(time.monotonic()-now)))
@@ -1032,15 +1034,29 @@ def main():
         success=False;emit(error=str(exc))
     finally:
         if done.is_set():success=False
-        if state.get('replay') is not None and arm_pub is not None and entered and not state['failure']:
-            # Also clear the last target velocity after normal completion.
-            with lock:hold=list(state['q']) if not success and state['q'] is not None else commanded
-            if hold is not None:send_joints(hold,[0.]*18)
-        if base_pose_pub is not None and pose_sent_at is not None and not success and not state['failure']:
-            base_pose_pub.publish(Twist())  # Cancel our own relative goal, as RWH does.
-        if base_pub is not None and activated:
-            for _ in range(8):
-                base_pub.publish(Twist());time.sleep(.05)
+        try:
+            if state.get('replay') is not None and arm_pub is not None and entered and not state['failure']:
+                # Also clear the last target velocity after normal completion.
+                with lock:hold=list(state['q']) if not success and state['q'] is not None else commanded
+                if hold is not None:send_joints(hold,[0.]*18)
+        except Exception as exc:
+            success=False;emit(error='종료 관절 정지 명령 실패: '+str(exc))
+        try:
+            if base_pub is not None and activated:
+                for _ in range(8):
+                    base_pub.publish(Twist());time.sleep(.05)
+        except Exception as exc:
+            success=False;emit(error='종료 베이스 정지 명령 실패: '+str(exc))
+        finally:
+            # Keep the normal MPC route on every exit, including a lost reply
+            # to the initial quickMode 0 request.
+            if replay_quick_requested and quick_service is not None:
+                try:
+                    response=quick_service(quickMode=PREPARATION_CONTROL_MODES['quick'])
+                    if not response.success:raise ValueError('서비스가 quickMode 0 복귀를 거부했습니다.')
+                    emit(stage='Replay 일반 MPC 경로 유지 · quickMode 0',quick_mode=0)
+                except Exception as exc:
+                    success=False;emit(error='Replay quickMode 0 복귀 실패: '+str(exc))
         # Successful preparation holds external arm mode 2 for replay. A failed
         # move releases only authority we still own; never fight a takeover.
         if not success and entered and arm_service is not None:
@@ -1062,7 +1078,8 @@ def main():
             emit(event='replay_end',ros_time_ns=rospy.Time.now().to_nsec(),worker_monotonic_s=time.monotonic(),success=success,
                  execution_s=min(plan.end,plan.begin+max(0.,time.monotonic()-replay_clock)))
         emit(done=True,success=success,head_excluded=True,executor=EXECUTOR_VERSION,controller_pva_exact=False,
-             base_goal_odom=tracker.goal if tracker.frozen else None,base_odom_frame=tracker.odom_frame,
+             base_goal_odom=tracker.arrival_anchor() if success and not state.get('replay') else None,
+             base_odom_frame=tracker.odom_frame,base_error=tracker.visual if not state.get('replay') else None,
              stage=('replay 종료·정지 확인 완료' if state.get('replay') else '첫 자세 도착·정지 확인 완료') if success else '실행 정지')
     return 0 if success else 1
 
@@ -1106,7 +1123,8 @@ def build_package(key):
     if any(b-a>.25 for a,b in zip(times,times[1:]) if a<used[1] and b>used[0]):
         raise ValueError('선택 구간의 그리퍼 피드백 공백이 0.25초를 넘습니다.')
     data['claw']=np.array([np.interp(phases,times,np.array(grips)[:,i]) for i in range(2)]).T.tolist()
-    data.update(interval=list(interval),fingerprint=fingerprint,
+    data.update(gripper_policy=dict(close_at_open_fraction=.40,comparison='<=',target_open_fraction=0.,applied_after_interpolation=True),
+        interval=list(interval),fingerprint=fingerprint,
         velocity_limits=[float(x['velocity_limit']) for x in peaks],
         acceleration_limits=[float(x['acceleration_limit']) for x in peaks],
         artifact_sha256={name:hashlib.sha256(raw[str(path)]).hexdigest() for name,path in [('trajectory',trajectory),('source',source),('validation',report_path)]},

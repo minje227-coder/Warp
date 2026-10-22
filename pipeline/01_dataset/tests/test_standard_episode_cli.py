@@ -24,4 +24,18 @@ class EpisodeCLI(unittest.TestCase):
   self.spec.pop('display_source');r=self.call();self.assertNotEqual(r.returncode,0);self.assertIn('Four-window rendering needs',r.stderr);self.assertEqual(self.call('--no-render').returncode,0)
  def test_existing_output_is_preserved(self):
   (self.runtime/'results/review').mkdir(parents=True);r=self.call();self.assertNotEqual(r.returncode,0);self.assertIn('Output already exists',r.stderr)
+
+ def test_base_link_dry_run_prepares_without_writing(self):
+  calibration=self.root/'calibration.json';calibration.write_text('{}')
+  destination=self.root/'new-inputs'
+  r=self.call('--no-render','--base-link-calibration',str(calibration),'--base-link-inputs',str(destination))
+  self.assertEqual(r.returncode,0,r.stderr);v=json.loads(r.stdout)
+  self.assertIn(str(calibration),v['preparation_command'])
+  self.assertIn(str(destination/'reference.jsonl'),v['command'])
+  self.assertFalse(destination.exists())
+ def test_base_link_supports_matching_adopted_renderer(self):
+  r=self.call('--base-link-calibration',str(self.root/'calibration.json'))
+  self.assertEqual(r.returncode,0,r.stderr);v=json.loads(r.stdout)
+  self.assertTrue(v['four_window_rendering']);self.assertIn('--display-source',v['command'])
+
 if __name__=='__main__':unittest.main()

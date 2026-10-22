@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 
 import os
+import shutil
 
 
 class DataDirectory:
@@ -32,6 +33,7 @@ datadir = DataDirectory()
 
 LOCK=threading.RLock()
 ACTIVE={'starting','recording','running','saving'}
+RECOVERY_LIMIT=3
 
 
 def _source(meta):
@@ -102,6 +104,21 @@ def listing():
     return {"recordings":[r[0] for r in rows],"unreadable":errors}
 
 
+def dashboard_runs():
+    """Share run identities with the dashboard without changing recorder formats."""
+    root=Path(datadir.path('retargeting','runs')).resolve()
+    rows=[]
+    for row,folder,meta in _scan()[0]:
+        if folder.resolve().parent!=root:
+            continue
+        collection=meta.get('collection') or {}
+        size=_number(collection.get('bytes')) if isinstance(collection,dict) else None
+        rows.append(dict(row,kind='retargeting_run',run_id=row['id'],
+            duration=row['duration_s'],size_mb=size/1e6 if size else None,
+            note='Replay · 원본 '+row['source_episode'].split('_')[0]))
+    return rows
+
+
 def _find(key):
     for row,folder,meta in _scan()[0]:
         if row["id"]==key:
@@ -137,6 +154,24 @@ def detail(key):
                 videos=[{"index":i,"label":label} for i,(label,_) in enumerate(_videos(folder,meta))])
 
 
+
+def rename(key,name):
+    if not isinstance(name,str):
+        raise ValueError("녹화 이름을 문자열로 입력하세요.")
+    name=name.strip()
+    if not name or len(name)>180 or any(ord(c)<32 or ord(c)==127 for c in name):
+        raise ValueError("녹화 이름은 줄바꿈 없이 1~180자로 입력하세요.")
+    with LOCK:
+        row,folder,meta=_find(key)
+        if row["status"] in ACTIVE:
+            raise ValueError("녹화와 파일 저장이 끝난 뒤 이름을 변경하세요.")
+        meta.update(name=name,name_updated_at=time.time())
+        path=next(folder/n for n in ("manifest.json","run.json","meta.json") if (folder/n).is_file())
+        temp=path.with_name(path.name+"."+uuid.uuid4().hex+".tmp")
+        temp.write_text(json.dumps(meta,ensure_ascii=False,indent=2)+"\n");temp.replace(path)
+    return detail(key)
+
+
 def label(key,success,note=''):
     if success is not None and type(success) is not bool:raise ValueError('작업 결과는 성공·실패·미분류 중 하나입니다.')
     if not isinstance(note,str) or len(note)>1000:raise ValueError('메모는 1000자 이내로 입력하세요.')
@@ -157,3 +192,73 @@ def video_path(key,index):
     if index<0 or index>=len(videos):
         raise ValueError("이 기록의 영상이 없습니다.")
     return videos[index][1]
+
+
+def _deletion_state(key):
+    row,folder,meta=_find(key)
+    if row['status'] in ACTIVE:
+        raise ValueError('녹화와 파일 저장이 끝난 뒤 삭제하세요.')
+    roots=[Path(datadir.path('retargeting','runs')).resolve(),Path(datadir.path('recordings')).resolve()]
+    if folder.is_symlink() or folder.resolve().parent not in roots:
+        raise ValueError('녹화 기록 폴더의 경로를 확인할 수 없습니다.')
+    inventory=[]
+    for parent,dirs,files in os.walk(folder,followlinks=False):
+        dirs[:]=[name for name in dirs if not (Path(parent)/name).is_symlink()]
+        for name in sorted(files):
+            path=Path(parent)/name
+            stat=path.lstat()
+            inventory.append((str(path.relative_to(folder)),stat.st_size,stat.st_mtime_ns,path.is_symlink()))
+    inventory.sort()
+    revision=hashlib.sha256(json.dumps([meta,inventory],sort_keys=True).encode()).hexdigest()
+    return row,folder,revision,sum(item[1] for item in inventory if not item[3])
+
+
+def deletion_preview(key):
+    with LOCK:
+        row,folder,revision,size=_deletion_state(key)
+        return dict(id=key,name=row['name'],bytes=size,revision=revision,recovery_limit=RECOVERY_LIMIT)
+
+
+def _trim_recovery(trash):
+    entries=[]
+    for folder in trash.iterdir():
+        if folder.is_symlink() or not folder.is_dir() or len(folder.name)!=32:
+            continue
+        try:
+            int(folder.name,16)
+            receipt=folder/'RESTORE.json'
+            recording=folder/'recording'
+            if receipt.is_symlink() or recording.is_symlink() or not recording.is_dir():
+                continue
+            meta=json.loads(receipt.read_text())
+            order=int(meta.get('deleted_at_ns',float(meta['deleted_at'])*1e9))
+            entries.append((order,folder.name,folder))
+        except (OSError,ValueError,TypeError,KeyError,OverflowError):
+            continue
+    entries.sort()
+    expired=[]
+    for _,name,folder in entries[:-RECOVERY_LIMIT]:
+        shutil.rmtree(folder)
+        expired.append(name)
+    return expired
+
+
+def delete(key,revision):
+    """Move only this completed history folder to recoverable local storage."""
+    with LOCK:
+        row,folder,current,size=_deletion_state(key)
+        if not isinstance(revision,str) or revision!=current:
+            raise ValueError('녹화 기록이 변경됐습니다. 목록에서 다시 삭제하세요.')
+        root=Path(datadir.path()).resolve()
+        trash=root/'.trash'/'replay-recordings'
+        if not trash.resolve().is_relative_to(root):
+            raise ValueError('복구 보관 폴더의 경로가 올바르지 않습니다.')
+        container=trash/uuid.uuid4().hex
+        container.mkdir(parents=True)
+        receipt=dict(id=key,name=row['name'],original_path=str(folder),deleted_at=time.time(),
+                     deleted_at_ns=time.time_ns(),bytes=size)
+        (container/'RESTORE.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n')
+        folder.rename(container/'recording')
+        expired=_trim_recovery(trash)
+        return dict(ok=True,id=key,name=row['name'],bytes=size,recoverable=True,
+                    recovery_limit=RECOVERY_LIMIT,expired_count=len(expired))

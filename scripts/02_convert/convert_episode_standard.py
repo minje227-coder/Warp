@@ -10,6 +10,8 @@ def main():
  p.add_argument('--python',default=os.environ.get('KUAVO_STANDARD_PYTHON','/home/lab6/Warp/.venv-retarget/bin/python'))
  p.add_argument('--prepared',type=Path,help='This recording\'s prepared.json; default: RUNTIME/prepared/TAKE/prepared.json')
  p.add_argument('--run-name',help='Unique output name; existing outputs are never overwritten')
+ p.add_argument('--base-link-calibration',type=Path,help='Explicit T_base_recording JSON (standard: surveyed fixed-height translation; see frame metadata)')
+ p.add_argument('--base-link-inputs',type=Path,help='New directory for transformed inputs; never overwrite')
  p.add_argument('--no-render',action='store_true',help='Explicitly skip four-window rendering')
  p.add_argument('--dry-run',action='store_true',help='Check paths/provenance and show the exact command')
  a=p.parse_args();episode=a.episode.expanduser().resolve()
@@ -27,6 +29,15 @@ def main():
  name=a.run_name or episode.name+'-'+datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
  if Path(name).name!=name or name in ['.','..']:p.error('run-name must be a plain directory name')
  if (runtime/'results'/name).exists():p.error('Output already exists; choose a new run-name')
+ preparation_command=None
+ if a.base_link_calibration:
+  destination=(a.base_link_inputs or runtime/'prepared'/episode.name/('base-link-'+name)).expanduser().resolve()
+  if destination.exists():p.error('Transformed input directory already exists: '+str(destination))
+  preparation_command=[a.python,str(Path(__file__).with_name('prepare_base_link.py')),'--prepared',str(descriptor),'--calibration',str(a.base_link_calibration.expanduser().resolve()),'--output',str(destination)]
+  if not a.dry_run:
+   subprocess.run(preparation_command,check=True,stdout=sys.stderr)
+  descriptor=destination/'prepared.json'
+  files=dict(reference=destination/'reference.jsonl',world=destination/'world.json',reference_config=destination/'reference-config.json')
  command=[a.python,str(runtime/'standard.py'),'run',name,'--recording-take',episode.name]
  for k,f in files.items():command+=['--'+k.replace('_','-'),str(f)]
  if not a.no_render:
@@ -35,7 +46,7 @@ def main():
   if not display.is_dir():p.error('display_source directory missing: '+str(display))
   if not (display/'results'/episode.name).is_dir():p.error('display_source does not contain this recording')
   command+=['--display-source',str(display)]
- print(json.dumps(dict(episode=str(episode),prepared=str(descriptor),output=str(runtime/'results'/name),four_window_rendering=not a.no_render,command=command),ensure_ascii=False,indent=2),flush=True)
+ print(json.dumps(dict(episode=str(episode),prepared=str(descriptor),output=str(runtime/'results'/name),four_window_rendering=not a.no_render,preparation_command=preparation_command,command=command),ensure_ascii=False,indent=2),flush=True)
  if a.dry_run:return 0
  return subprocess.run(command,env=dict(os.environ,OPENBLAS_NUM_THREADS='1',OMP_NUM_THREADS='1',MUJOCO_GL='egl',PYTHONDONTWRITEBYTECODE='1')).returncode
 if __name__=='__main__':raise SystemExit(main())

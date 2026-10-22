@@ -81,18 +81,66 @@
     "paper_border_provenance": "user confirmed 5mm all tags",
     "alignment": "tag100 preserves original front-face anchor; tag101 uses adopted fixed image-calibrated relative position and in-plane rotation",
     "observed_box_ids": [
-      100
+      100,
+      110
     ],
     "observed_tags": [
       100,
-      101
+      101,
+      110,
+      111
     ],
     "A13_full_dimensions_m": [
       0.265,
       0.185,
       0.222
     ],
-    "tag_layout_calibration": "box_tag_calibration.json"
+    "tag_layout_calibration": "box_tag_calibration.json",
+    "instances": [
+      {
+        "tag_offsets_in_front_face_axes_m": {
+          "100": [
+            -0.0975,
+            0.076,
+            0.0
+          ],
+          "101": [
+            0.0869765487967015,
+            0.07074376449132885,
+            0.0
+          ]
+        },
+        "tag_inplane_rotations_rad": {
+          "100": 0.0,
+          "101": -0.044749254981557816
+        },
+        "tag_layout_calibration": "box_tag_calibration.json",
+        "id": "box_100_A13",
+        "layout_provenance": "existing adopted calibration for this instance"
+      },
+      {
+        "id": "box_110_A13",
+        "tag_offsets_in_front_face_axes_m": {
+          "110": [
+            -0.0975,
+            0.076,
+            0.0
+          ],
+          "111": [
+            0.0975,
+            0.076,
+            0.0
+          ]
+        },
+        "tag_inplane_rotations_rad": {
+          "110": 0.0,
+          "111": 0.0
+        },
+        "tag_layout_calibration": null,
+        "layout_provenance": "nominal standard A13 paper-edge placement; not the 100/101 image calibration"
+      }
+    ],
+    "missing_observation_policy": "hold_last_valid_pose"
   },
   "legacy_box_tag_7_enabled": false,
   "reference": "https://github.com/AprilRobotics/apriltag/blob/master/tag36h11.c",

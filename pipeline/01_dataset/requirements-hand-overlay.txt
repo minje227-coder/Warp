@@ -1,0 +1,10 @@
+# Tested in a separate Python 3.12.14 preview environment. Do not install into
+# the Drake retarget environment or the live capture/receiver environment.
+mediapipe==1.1.0
+opencv-contrib-python==5.0.0.93
+numpy==2.5.4
+scipy==1.18.1
+trimesh==5.1.1
+fast-simplification==0.2.0
+av==19.0.1
+pillow==12.3.0

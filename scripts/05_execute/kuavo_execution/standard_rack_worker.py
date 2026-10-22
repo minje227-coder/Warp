@@ -1,81 +1,64 @@
 #!/usr/bin/env python3
-"""Read-only adapter to the adopted standard's unmodified tag-bundle solver.
-
-Runs in system Python, which already supplies OpenCV. Dashboard Python need
-not acquire another numerical stack. ROS is never imported here.
-"""
-import base64
+"""Fit RWH apt ROS tag centers in the upright rack frame; no redetection."""
 import hashlib
 import importlib.util
 import json
 import sys
 from pathlib import Path
 
-SOURCE=Path('/home/lab6/Warp-review/wilor-kuavo-standard/tools/multi_tag_pose.py')
-VISION_DEPS=Path('/home/lab6/humanoid/data/retargeting/vision-deps')
-DETECTOR=None
+SOURCE=Path('/home/lab6/Warp-review/wilor-kuavo-standard/tools/ros_tag_pose.py')
 
 
-def solve(request,module):
-    import cv2
+def solve(request,module=None):
     import numpy as np
-    K=np.asarray(request['K'],float).reshape(3,3)
-    D=np.asarray(request.get('D',[]),float)
-    known={int(k):np.asarray(v,float) for k,v in request['rack_tags'].items()}
-    anchor=known[min(known)]
-    centers={tid:anchor[:3,:3].T@(M[:3,3]-anchor[:3,3]) for tid,M in known.items()}
-    detections={};raw_corners={}
-    if request.get('png'):
-        global DETECTOR
-        if DETECTOR is None:
-            sys.path.insert(0,str(VISION_DEPS))
-            from pupil_apriltags import Detector
-            DETECTOR=Detector(families='tag36h11',nthreads=1,quad_decimate=1.,quad_sigma=0.,
-                              refine_edges=1,decode_sharpening=.25)
-        image=cv2.imdecode(np.frombuffer(base64.b64decode(request['png']),np.uint8),cv2.IMREAD_GRAYSCALE)
-        if image is None:raise ValueError('원본 head PNG 해독 실패')
-        observed=[(int(t.tag_id),np.asarray(t.corners,float)) for t in DETECTOR.detect(image)]
-        detector='pupil_apriltags'
-    else:
-        # Saved-corner regression inputs are already in IPPE order.
-        observed=[(int(t['id']),np.asarray(t['corners'],float)[[3,2,1,0]]) for t in request['tags']]
-        detector='provided_corners'
-    for tid,pupil in observed:
-        if tid not in known:continue
-        if not np.isfinite(pupil).all():raise ValueError('태그 코너가 유효하지 않습니다')
-        rect=cv2.undistortPoints(pupil.reshape(-1,1,2),K,D if len(D) else None,P=K).reshape(4,2)
-        detections[tid]={'corners':rect.tolist()}
-        raw_corners[str(tid)]=pupil[[3,2,1,0]].tolist()
+    if request.get('detector') != 'apt_apriltag_ros':
+        raise ValueError('apt apriltag_ros 관측만 허용합니다')
     p=np.asarray(request['base_camera_pose'],float)
-    x,y,z,w=p[3:]/np.linalg.norm(p[3:])
-    Rbc=np.array([[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w)],
-                  [2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w)],
-                  [2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)]])
-    Tbc=np.eye(4);Tbc[:3,:3]=Rbc;Tbc[:3,3]=p[:3]
-    config=request['settings'];selection=config['pose_selection'];settings=config['multi_tag_pose']
-    q=module.estimate_tag_bundle(detections,centers,config['tag_size_m'],K,Rbc,p[:3],
-        max_rms_px=selection['maximum_reprojection_rms_px'],
-        min_up=selection['minimum_tag_y_up_component'],
-        ransac_error_px=settings['ransac_reprojection_error_px'],
-        ransac_iterations=settings['ransac_iterations'],ransac_confidence=settings['ransac_confidence'])
-    if q is None:raise ValueError('standard 기준을 통과한 랙 태그 자세가 없습니다')
-    Tba=np.eye(4);Tba[:3,:3]=q['rotation'];Tba[:3,3]=q['position']
-    T=np.linalg.inv(Tbc)@Tba@np.linalg.inv(anchor)
-    meta={k:q[k] for k in ['method','tag_ids','observed_tag_ids','rejected_tag_ids','corner_count',
-                          'per_tag_rms_px','rms','joint_failure_reason'] if k in q}
-    return dict(T_camera_recording=T.tolist(),raw_tag_corners=raw_corners,detector=detector,**meta)
+    from scipy.spatial.transform import Rotation
+    Tbc=np.eye(4);Tbc[:3,:3]=Rotation.from_quat(p[3:]).as_matrix();Tbc[:3,3]=p[:3]
+    known={int(k):np.asarray(v,float) for k,v in request['rack_tags'].items()}
+    ids=[];local=[];measured=[]
+    for tag in request['tags']:
+        tid=int(tag['id'])
+        if tid not in known:continue
+        if tid in ids:raise ValueError('중복 태그 ID')
+        T=np.asarray(tag['T_camera_tag'],float)
+        if T.shape!=(4,4) or not np.isfinite(T).all():raise ValueError('잘못된 태그 자세')
+        ids.append(tid);local.append(known[tid][:3,3]);measured.append((Tbc@T)[:3,3])
+    if len(ids)==1 and request.get('allow_single_tag_projection'):
+        tid=ids[0]
+        observed=next(np.asarray(v['T_camera_tag'],float) for v in request['tags'] if int(v['id'])==tid)
+        relative=Tbc@observed@np.linalg.inv(known[tid])
+        if np.linalg.norm(relative[:2,0])<1e-6:raise ValueError('태그의 수평 방향을 추정할 수 없습니다')
+        yaw=np.arctan2(relative[1,0],relative[0,0])
+        R=Rotation.from_euler('z',yaw).as_matrix()
+        transform=np.eye(4);transform[:3,:3]=R
+        transform[:3,3]=measured[0]-R@local[0]
+        return dict(T_camera_recording=(np.linalg.inv(Tbc)@transform).tolist(),tag_ids=ids,
+            observed_tag_ids=ids,rejected_tag_ids=[],method='rwh_single_tag_projection',
+            rms_m=None,rms=None,detector='apt_apriltag_ros',corner_source='not_used',projection_only=True)
+    if len(ids)<2:raise ValueError('가로로 떨어진 랙 태그가 두 개 이상 필요합니다')
+    a,b=np.asarray(local),np.asarray(measured)
+    ac=a[:,:2]-a[:,:2].mean(0);bc=b[:,:2]-b[:,:2].mean(0)
+    if np.linalg.norm(ac)<.03 or np.linalg.norm(bc)<.03:raise ValueError('랙 태그 간격이 부족합니다')
+    yaw=np.arctan2(np.sum(ac[:,0]*bc[:,1]-ac[:,1]*bc[:,0]),np.sum(ac*bc))
+    R=Rotation.from_euler('z',yaw).as_matrix();t=np.mean(b-a@R.T,axis=0)
+    rms=float(np.sqrt(np.mean(np.sum((a@R.T+t-b)**2,axis=1))))
+    if not np.isfinite(rms) or rms>.05:raise ValueError('랙 태그 피팅 잔차가 5cm를 넘었습니다')
+    T=np.eye(4);T[:3,:3]=R;T[:3,3]=t
+    return dict(T_camera_recording=(np.linalg.inv(Tbc)@T).tolist(),tag_ids=ids,
+        observed_tag_ids=ids,rejected_tag_ids=[],method='rwh_planar_tag_positions',rms_m=rms,
+        rms=None,detector='apt_apriltag_ros',corner_source='not_used')
 
 
 def main():
     sys.dont_write_bytecode=True
-    spec=importlib.util.spec_from_file_location('adopted_standard_multi_tag_pose',SOURCE)
-    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
     fingerprint=hashlib.sha256(SOURCE.read_bytes()).hexdigest()
     for line in sys.stdin:
         try:
             request=json.loads(line)
             if request['standard_sha256']!=fingerprint:raise ValueError('standard 추정 코드가 바뀌었습니다. 다시 연결하세요.')
-            result=solve(request,module);result['standard_sha256']=fingerprint
+            result=solve(request);result['standard_sha256']=fingerprint
             reply={'ok':True,'result':result}
         except Exception as exc:reply={'ok':False,'error':str(exc)}
         print(json.dumps(reply,separators=(',',':')),flush=True)

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
@@ -44,7 +45,7 @@ assert session.common is None
         done=subprocess.run([sys.executable,'-I','-c',script,str(ROOT)],capture_output=True,text=True)
         self.assertEqual(done.returncode,0,done.stderr)
 
-    def run_session(self,ready=True,valid=True,tracking_error=.1):
+    def run_session(self,ready=True,valid=True,tracking_error=.1,prepared=True,confirmed=False):
         calls=[]
         class Capture:
             def __init__(self,*args):self.ready=threading.Event();self.info={}
@@ -60,29 +61,51 @@ assert session.common is None
         proc=Process([dict(event='replay_start',ros_time_ns=1),
                       dict(sample=True,elapsed_s=3.,actual_q=[tracking_error]*18,position=[0.]*21),
                       dict(event='replay_end',ros_time_ns=4,success=True),dict(done=True,success=True)])
-        def spawn(*args,**kwargs):calls.append('motion.spawn');return proc
-        control=NS(LINK=NS(popen_script=spawn),ACTIONS={})
+        processes=([Process([dict(done=True,success=prepared)])] if not confirmed else [])+[proc]
+        def spawn(*args,**kwargs):
+            calls.append('motion.spawn');return processes.pop(0)
+        control=NS(LINK=NS(popen_script=spawn,snapshot={}),ACTIONS={})
         episodes=NS(selection_detail=lambda *a:detail,entry=lambda *a:{})
         tmp=tempfile.TemporaryDirectory();self.addCleanup(tmp.cleanup)
         data=history.DataDirectory(tmp.name)
         session.configure(control=control,episode_source=episodes,paths=data)
-        s=session.Session(detail,'sid',plan);s.beat('sid','take','fp')
+        saved=dict(id='take',fingerprint='fp',checks=dict(robot=True,boxes=True),
+                   base_goal_odom=[0.,0.,0.],base_odom_frame='odom',first_state_target={}) if confirmed else None
+        s=session.Session(detail,'sid',plan,confirmed_state=saved);s.beat('sid','take','fp')
         driver=NS(ReplayPath=lambda _:NS(elapsed=lambda _:[None,None,None,[0.,0.]]))
         with patch.object(capture,'Capture',Capture),patch.object(first_state,'target',return_value={}),\
-             patch.object(package,'prepare',return_value=plan),patch.object(package,'driver',return_value=driver):
+             patch.object(package,'prepare',return_value=plan),patch.object(package,'driver',return_value=driver),\
+             patch.object(first_state,'base_feedback_matches',return_value=True),\
+             patch.object(first_state,'feedback_matches',return_value=True):
             s.run()
         meta=json.loads((s.run_dir/'manifest.json').read_text())
         return s,meta,calls
 
     def test_standalone_session_owns_order_trace_manifest_and_tracking(self):
         s,meta,calls=self.run_session()
-        self.assertEqual(calls,['capture.start','capture.ready','motion.spawn','capture.finish'])
+        self.assertEqual(calls,['capture.start','capture.ready','motion.spawn','motion.spawn','capture.finish'])
         self.assertEqual(meta['status'],'completed');self.assertTrue(meta['collection_valid'])
         self.assertTrue(meta['execution_completed']);self.assertIsNone(meta['success'])
         self.assertEqual(meta['tracking']['samples'],1)
         self.assertAlmostEqual(meta['tracking']['maximum_joint_error_deg'],math.degrees(.1))
         self.assertAlmostEqual(meta['tracking']['rms_joint_error_deg'],math.degrees(.1))
-        self.assertEqual(len((s.run_dir/'trace.jsonl').read_text().splitlines()),1)
+        rows=[json.loads(line) for line in (s.run_dir/'trace.jsonl').read_text().splitlines()]
+        self.assertEqual(sum(bool(r.get('sample')) for r in rows),1)
+        self.assertTrue(any(r.get('done') and r.get('phase')=='preparation' for r in rows))
+        self.assertTrue(any(r.get('event')=='replay_start' and 'received_monotonic_s' in r for r in rows))
+
+    def test_confirmed_alignment_is_reused_after_capture_without_second_alignment_worker(self):
+        s,meta,calls=self.run_session(confirmed=True)
+        self.assertEqual(calls,['capture.start','capture.ready','motion.spawn','capture.finish'])
+        self.assertTrue(meta['preparation_reused']);self.assertTrue(meta['execution_completed'])
+        rows=[json.loads(line) for line in (s.run_dir/'trace.jsonl').read_text().splitlines()]
+        self.assertEqual(rows[0]['event'],'first_alignment_reused')
+
+    def test_preparation_failure_never_launches_replay(self):
+        _,meta,calls=self.run_session(prepared=False)
+        self.assertEqual(calls.count('motion.spawn'),1)
+        self.assertFalse(meta['execution_completed'])
+        self.assertIn('첫 자세 이동 실패',meta['error'])
 
     def test_readiness_failure_never_launches_motion(self):
         _,meta,calls=self.run_session(ready=False,valid=False)
@@ -111,6 +134,53 @@ assert session.common is None
     def test_storage_root_must_be_explicit(self):
         with patch.dict('os.environ',{},clear=True):
             with self.assertRaisesRegex(ValueError,'root'):history.DataDirectory().path('retargeting')
+
+
+class ConfirmationReuseTests(unittest.TestCase):
+    def make(self):
+        goal=dict(q=[0.]*18,claw=[40.,40.])
+        saved=dict(id='take',fingerprint='fp',checks=dict(robot=True,boxes=True),
+                   base_goal_odom=[0.,0.,0.],base_odom_frame='odom',first_state_target=goal)
+        now=time.time()
+        snapshot=dict(t=now,topics={
+            '/sensors_data_raw':dict(age=0.,data=dict(joint_data=dict(joint_q=[0.]*18))),
+            '/leju_claw_state':dict(age=0.,data=dict(data=dict(position=[40.,40.]))),
+            '/odom':dict(age=0.,data=dict(header=dict(frame_id='odom'),pose=dict(pose=dict(
+                position=dict(x=0.,y=0.),orientation=dict(x=0.,y=0.,z=0.,w=1.)))))})
+        s=session.Session(dict(id='take',fingerprint='fp'),'sid',{},confirmed_state=saved)
+        return s,goal,snapshot
+
+    def test_unchanged_confirmed_pose_passes_without_motion(self):
+        s,goal,snapshot=self.make()
+        with patch.object(session,'common',NS(LINK=NS(snapshot=snapshot))):
+            self.assertTrue(s.reuse_preparation(goal))
+        self.assertTrue(s.preparation_reused)
+
+    def test_start_snapshots_confirmation_before_dashboard_consumes_it(self):
+        s,goal,snapshot=self.make()
+        source=NS(LOCK=threading.RLock(),SESSIONS={'sid':s.confirmed_state})
+        control=NS(LINK=NS(snapshot=snapshot),ACTIONS={})
+        with patch.object(session,'episodes',source),patch.object(session,'common',control),\
+             patch.object(session,'CURRENT',None),patch.object(session,'unavailable',return_value=''),\
+             patch.object(first_state,'target',return_value=goal),patch.object(threading.Thread,'start'):
+            session.start(dict(id='take',fingerprint='fp'),'sid',dict(frame_id='frame'),
+                          dict(ok=True,age_s=0.,robot_error=dict(forward_m=0.,left_m=0.,yaw_deg=0.)),replay_plan={})
+            source.SESSIONS.clear()
+            self.assertTrue(session.CURRENT.reuse_preparation(goal))
+
+    def test_pose_drift_stale_feedback_changed_selection_and_revoked_check_block_reuse(self):
+        for fault in ('joint','claw','base','stale','selection','revoked','goal'):
+            s,goal,snapshot=self.make()
+            if fault=='joint':snapshot['topics']['/sensors_data_raw']['data']['joint_data']['joint_q'][0]=math.radians(4)
+            if fault=='claw':snapshot['topics']['/leju_claw_state']['data']['data']['position'][0]=60.
+            if fault=='base':snapshot['topics']['/odom']['data']['pose']['pose']['position']['x']=.05
+            if fault=='stale':snapshot['t']-=2.
+            if fault=='selection':s.confirmed_state['fingerprint']='old'
+            if fault=='revoked':s.confirmed_state['checks']['robot']=False
+            if fault=='goal':goal=dict(q=[math.radians(4)]*18,claw=[40.,40.])
+            with patch.object(session,'common',NS(LINK=NS(snapshot=snapshot))):
+                with self.assertRaises(ValueError,msg=fault):s.reuse_preparation(goal)
+            self.assertFalse(s.preparation_reused,fault)
 
 
 if __name__=='__main__':unittest.main()

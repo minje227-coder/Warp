@@ -112,3 +112,35 @@ Original validated dashboard results/videos and CURRENT.json are retained becaus
 their trajectories are identical. New conversions use the optimized implementation.
 Detailed evidence: /home/lab6/warp-validation-speed-stage-20261020/.
 No robot commands or mode setters were executed; jerk/Kalman remain off.
+
+
+## 2026-10-22: 고정 높이·박스축 3cm·40% 닫힘·측면/빨간 접촉부 채택
+
+고정 높이는 0/4/1=1.615m, 2/5/3=1.000m를 공통 Z 이동으로 맞췄습니다.
+기록 모델의 610mm 간격과 실측 615mm 차이 때문에 잔차가 있으며 현재 녹화들에서 최대 약 3.7–4.8mm입니다.
+로봇 관측으로 높이를 재추정하지 않았습니다. 박스 태그 -Y 3cm 계산은 7개 중 5개 통과, 2개 실패였습니다.
+
+| 녹화 | 3cm 계산 | 현재 표시 결과 |
+|---|---|---|
+| 13-42-32 | 통과 | 검증된 3cm 궤적 |
+| 13-43-02 | 통과 | 검증된 3cm 궤적 |
+| 13-43-31 | 실패, IK 5프레임 | 이전 검증된 0cm 궤적 유지 |
+| 13-43-54 | 실패, refinement SNOPT 41 | 채택 결과 없음 |
+| 13-44-20 | 통과 | 검증된 3cm 궤적 |
+| 13-44-52 | 통과 | 검증된 3cm 궤적 |
+| 13-45-15 | 통과 | 검증된 3cm 궤적 |
+
+현재 존재하는 6개 영상은 40% 닫힘·측면 뷰·접촉 finger 빨간색으로 재렌더했고 source/trajectory artifact 불변을 확인했습니다.
+6개가 전부 3cm 계산 통과라는 뜻은 아닙니다. 결과 manifest:
+`/home/lab6/humanoid/data/retargeting/media/gripper-snap40-redtips-visible-side-20261022/RESULT.json`.
+영상의 빨간색은 실제 접촉 검출이 아닙니다. head 공유/단일 태그 projection과 별도로 검출 끊김에 의한 투영 flicker는 남을 수 있습니다.
+이번 standard 채택/문서/저장소 통합에서 로봇 명령은 보내지 않았습니다.
+
+
+### Main 병합본 확인
+
+- 실행 backend 98 + 입력 준비 3 + episode CLI 7 + exact path/validation 20: **128개 통과**.
+- 기존 retarget/hand mapping/gripper pytest: **24개 통과, 14개 skip** (환경 조건).
+- frozen source/config 52개 SHA256 일치, active runtime 핵심 계산/설정 14개 일치, 변경 Python AST·dashboard JavaScript 문법 확인.
+- 기존 dashboard adapter 설치 계획 dry-run 성공. 설치/서비스 재시작/로봇 동작은 실행하지 않음.
+- 서로 분기됐던 로컬 retarget 이력과 원격 main 이력을 병합해 보존. 별도 수집 앱의 미커밋 수정과 생성 영상은 추가하지 않음.
