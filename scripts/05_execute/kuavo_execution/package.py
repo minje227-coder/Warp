@@ -7,6 +7,7 @@ import importlib.util
 import os
 from functools import lru_cache
 from pathlib import Path
+from . import grasp_policy
 
 
 
@@ -28,7 +29,7 @@ def identity(entry,detail,allow_unverified=False):
     result=Path(entry['result'])
     paths=[result/'results/execution-trajectory-100hz.npz',result/'data/source-trajectory.jsonl',result/'REPORT.json']
     return (detail['fingerprint'],tuple((str(p),p.stat().st_mtime_ns,p.stat().st_size) for p in paths),
-            tuple(detail['selection'][x]['execution_s'] for x in ('start','end')),allow_unverified)
+            tuple(detail['selection'][x]['execution_s'] for x in ('start','end')),allow_unverified,grasp_policy.signature(result))
 
 
 def prepare(entry,detail,fresh=False,allow_unverified=False):

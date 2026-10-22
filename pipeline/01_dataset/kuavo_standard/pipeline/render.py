@@ -6,6 +6,7 @@ import numpy as np,av,mujoco
 from scipy.spatial.transform import Rotation,Slerp
 from PIL import Image,ImageDraw,ImageFont
 from fractions import Fraction
+import importlib.util
 c=Path(__file__).resolve().parent;policy=json.load(open(c/'POLICY.json'));src=Path(policy['source_candidate']);take=policy['take'];out=src/'results'/take
 sys.path.insert(0,str(src));sys.path.insert(0,str(src/'source'))
 from retarget.model import JOINT_NAMES
@@ -45,11 +46,17 @@ if coordinate_preparation:
  rotation=np.column_stack((np.cross(forward,up),up,-forward))
 hands=[[1,2,3,4,5],[1,7,8,9,10],[1,12,13,14,15],[1,17,18,19,20],[1,22,23,24,25],[7,12,17,22]];hand_edges=[(a,b) for chain in hands for a,b in zip(chain,chain[1:])]
 font=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',18)
+_grasp_path=Path(policy['runtime_root'])/'pipeline/source/retarget/box_grasp.py'
+_grasp_spec=importlib.util.spec_from_file_location('render_box_grasp',_grasp_path)
+grasp_policy=importlib.util.module_from_spec(_grasp_spec);_grasp_spec.loader.exec_module(grasp_policy)
+grasp_timeline=grasp_policy.load(c)
+with np.load(c/'results/execution-trajectory-100hz.npz',allow_pickle=False) as _z:
+ grasp_et=_z['execution_s'].copy();grasp_values=grasp_policy.sample_many(grasp_timeline,_z['source_s'])
 def interp_source(t):
  hi=min(int(np.searchsorted(ts,t)),len(ts)-1);lo=max(0,hi-1);u=0. if hi==lo else np.clip((t-ts[lo])/(ts[hi]-ts[lo]),0,1);a,b=rows[lo],rows[hi]
  hp={kind:{int(k):(1-u)*np.array(v)+u*np.array(b['human_points'][kind][k]) for k,v in a['human_points'][kind].items() if k in b['human_points'][kind]} for kind in ['body','XRHandLeft','XRHandRight']}
  grippers=[(1-u)*a['grippers'][j]['open_fraction']+u*b['grippers'][j]['open_fraction'] for j in range(2)]
- grippers=[0. if g<=.40 else g for g in grippers]
+ # Gripper latch is sampled on the same execution grid as ReplayPath below.
  # Source scene rows keep the adopted fixed rack and filled open-top box view.
  sa,sb=scenes.get(a['external_index']),scenes.get(b['external_index'])
  if sa is None:sa=sb
@@ -79,6 +86,8 @@ def show_closed_tips(composite,robot_image):
   pixels=np.array(composite);pixels[red]=[255,25,20];composite=Image.fromarray(pixels)
  return composite
 target=c/'results/four-views-parameter-winner.mp4';assert not target.exists();record=[];start=time.perf_counter()
+(c/'results/gripper-policy-trace.jsonl').write_text(''.join(json.dumps(v)+'\n' for v in grasp_timeline['trace']))
+(c/'results/gripper-policy.json').write_text(json.dumps({k:v for k,v in grasp_timeline.items() if k not in ('trace','source_s')},indent=2))
 with av.open(str(sourcefile)) as reader,av.open(str(target.with_suffix('.partial.mp4')),'w',options={'movflags':'+faststart'}) as writer:
  decoder=iter(reader.decode(video=0));current=next(decoder);ci=0;next_frame=next(decoder,None)
  stream=writer.add_stream('libx264',rate=30);stream.width=1920;stream.height=1200;stream.pix_fmt='yuv420p';stream.options={'crf':'18','preset':'veryfast','bf':'0','threads':'2'};stream.time_base=stream.codec_context.time_base=Fraction(1,1000000)
@@ -86,7 +95,8 @@ with av.open(str(sourcefile)) as reader,av.open(str(target.with_suffix('.partial
   t=min(i/30,duration);p=float(np.interp(t,et,phase));x=np.array([np.interp(t,et,xs[:,j]) for j in range(21)])
   while next_frame is not None and ci+1<len(mapping) and mapping[ci+1]['source_s']<=p:
    current=next_frame;ci+=1;next_frame=next(decoder,None)
-  image=current.to_image();hp,grippers,objects=interp_source(p);set_pose(x,grippers)
+  image=current.to_image();hp,grippers,objects=interp_source(p)
+  grippers=grasp_values[int(np.clip(np.searchsorted(grasp_et,t,side='right')-1,0,len(grasp_et)-1))].tolist();set_pose(x,grippers)
   renderer.update_scene(data,camera=cam,scene_option=option);left_robot=Image.fromarray(renderer.render());left=left_robot.copy()
   project_edges(left,hp['body'],BODY_EDGES,position,rotation,(255,65,65,255),7,45)
   for key in ['XRHandLeft','XRHandRight']:project_edges(left,hp[key],hand_edges,position,rotation,(35,145,255,255),3,45)
@@ -113,5 +123,5 @@ with av.open(str(sourcefile)) as reader,av.open(str(target.with_suffix('.partial
  for packet in stream.encode():writer.mux(packet)
 renderer.close();target.with_suffix('.partial.mp4').rename(target)
 (c/'results/video-mapping.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in record))
-(c/'results/render-summary.json').write_text(json.dumps(dict(lower_right='adopted side view: azimuth -90 + base yaw, elevation -8, distance 2.65',human_skeleton_lower_right=False,gripper_close_indicator='red finger contact meshes only',gripper_policy=dict(close_at_open_fraction=.40,target_open_fraction=0.,applied_after_interpolation=True),coordinate_frame='observed_base_link' if coordinate_preparation else 'recording',frames=len(record),duration_s=duration,render_wall_s=time.perf_counter()-start,video_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),top_panels='source RGB from matching original frame; input camera cadence retained',bottom_panels='robot rendered at 30Hz from 100Hz native trajectory samples, source skeleton interpolated at the common source phase',jerk_applied=False,kalman_applied=False),indent=2))
+(c/'results/render-summary.json').write_text(json.dumps(dict(lower_right='adopted side view: azimuth -90 + base yaw, elevation -8, distance 2.65',human_skeleton_lower_right=False,gripper_close_indicator='red finger contact meshes only',gripper_policy=dict(grasp_policy.POLICY,execution_sampling='100Hz previous sample; identical to replay'),coordinate_frame='observed_base_link' if coordinate_preparation else 'recording',frames=len(record),duration_s=duration,render_wall_s=time.perf_counter()-start,video_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),top_panels='source RGB from matching original frame; input camera cadence retained',bottom_panels='robot rendered at 30Hz from 100Hz native trajectory samples, source skeleton interpolated at the common source phase',jerk_applied=False,kalman_applied=False),indent=2))
 print('COMPLETE',flush=True)

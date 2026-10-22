@@ -125,3 +125,16 @@ The 13-43-54 fixed-height/box-axis-3cm input previously stopped with SNOPT 41.
 Normalization alone recovers it: 240-Hz invalid states 63 -> 2 -> 0, followed
 by complete timed Drake and MoveIt validation. The 13-43-31 frame-IK issue is
 separate; this patch does not claim to resolve that recording.
+
+## Box-relative gripper policy (adopted 2026-10-23)
+
+`STANDARD.json.workflow.gripper` records the common rule approved after reviewing
+six previews: depth-gated close <=70%; opening >50% with a >=12pp increase and
+5mm relative withdrawal confirmed for 40ms in source time. Supporting association,
+speed, persistence and regrasp gates are documented in
+[RETARGETING_STANDARD.md](../../../docs/RETARGETING_STANDARD.md).
+The renderer loads `pipeline/source/retarget/box_grasp.py`; the execution backend
+carries the identical implementation. Regression tests check code/policy parity,
+closed-state retention and selected-start/replay consistency. Raw recordings,
+IK/time assignments and CURRENT.json are preserved; preview adoption does not
+claim physical grasp validation.

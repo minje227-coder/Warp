@@ -208,8 +208,11 @@ Offline preparation uses surveyed rack heights (0/4/1=1.615m, 2/5/3=1.000m),
 translation-only Z fitting and recorded residuals; it does not recapture robot TF/tags.
 New jobs default to 3cm along each associated box tag -Y, with no vertical fallback.
 Original descriptors remain the source for repeated preparation. Existing saved jobs retain their offsets.
-The first-state/replay payload snaps interpolated openings <=40% closed; raw values,
-body/arm IK and motion rate/effort remain unchanged. Explicit historical thresholds remain compatible.
+The 2026-10-23 box-relative grasp latch is shared by first-state selection, preview and replay.
+Close at <=70% only after depth insertion; release after opening >50%, a >=12pp increase
+and confirmed relative withdrawal (5mm, 40ms source time), with the supporting gates
+documented in RETARGETING_STANDARD.md. Both hands use the same rule; raw values,
+body/arm IK and motion rate/effort are preserved. Explicit historical thresholds remain compatible.
 Preview uses red contact fingers only, no CLOSE caption, and a lower-right side camera without human skeleton.
 Live RGB uses the dashboard's common.LINK head frame and /kuavo/cam/head endpoint.
 RWH /rwh/tag_detections feeds alignment; a single tag enables projection only, never robot alignment.

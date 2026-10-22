@@ -50,7 +50,7 @@
     "refinement_cache": "Reuse only bit-identical coordinates at the same source phase within one run"
   },
   "workflow": {
-    "revision": "2026-10-22",
+    "revision": "2026-10-23",
     "height_reference": {
       "frame": "fixed_rack_height",
       "tag_centers_m": {
@@ -75,13 +75,37 @@
       "missing_axis": "reject"
     },
     "gripper": {
-      "close_at_open_fraction": 0.4,
-      "inclusive": true,
+      "kind": "box_relative_grasp_v1",
+      "close_at_open_fraction": 0.7,
+      "release_above_open_fraction": 0.5,
+      "release_aperture_increase": 0.12,
+      "close_depth_m": 0.003,
+      "association_margin_m": 0.06,
+      "close_confirm_s": 0.08,
+      "release_confirm_s": 0.04,
+      "release_displacement_m": 0.005,
+      "release_relative_speed_m_s": 0.015,
+      "release_near_rim_depth_m": 0.025,
+      "history_s": 0.2,
+      "regrasp_close_fraction": 0.35,
+      "rearm_outside_depth_m": -0.005,
+      "max_gap_s": 0.25,
+      "target_open_fraction": 0.0,
+      "indicator": "red_finger_tips",
+      "time_axis": "source_s",
+      "fingertip": "human thumb/index midpoint; unmodified recorded human_points",
+      "depth_axis": "box local +Z; positive depth below top rim",
+      "calibration_verified": false,
+      "adopted_at": "2026-10-23 Asia/Seoul",
+      "adoption": "User approved shared preview/replay rule; thresholds are project settings, not hardware calibration",
       "closed_open_fraction": 0.0,
-      "claw_position": 100,
-      "apply_after_interpolation": true,
+      "opened_open_fraction": 1.0,
+      "claw_position_closed": 100,
+      "claw_position_open": 0,
+      "execution_sampling": "100Hz previous sample",
       "raw_values_unchanged": true,
-      "legacy_payload_policy": "explicit threshold retained; absent policy unchanged"
+      "legacy_payload_policy": "explicit threshold retained; absent policy unchanged",
+      "physical_execution_validated": false
     },
     "preview": {
       "panels": [

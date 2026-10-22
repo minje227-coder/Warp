@@ -361,7 +361,10 @@ class ReplayPath:
         j=max(0,min(len(self.t)-2,bisect.bisect_right(self.t,t)-1))
         u=(t-self.t[j])/(self.t[j+1]-self.t[j])
         sampled=tuple([a+(b-a)*u for a,b in zip(rows[j],rows[j+1])] for rows in (self.p,self.v,self.a,self.claw))
-        if self.gripper_close_fraction is not None:
+        if getattr(self,'data',{}).get('gripper_policy', {}).get('kind') == 'box_relative_grasp_v1':
+            k=max(0,min(len(self.t)-1,bisect.bisect_right(self.t,t)-1))
+            sampled=sampled[:3]+(list(self.claw[k]),)
+        elif self.gripper_close_fraction is not None:
             sampled=sampled[:3]+([100. if v>=100*(1-self.gripper_close_fraction) else v for v in sampled[3]],)
         return sampled
 
@@ -1089,7 +1092,12 @@ def build_package(key):
     import io
     from pathlib import Path
     import numpy as np
-    fingerprint,stats,interval,allow_unverified=key
+    fingerprint,stats,interval,allow_unverified,*policy_stamp=key
+    import importlib.util
+    _spec=importlib.util.spec_from_file_location('replay_box_grasp',Path(__file__).resolve().parent/'kuavo_execution/grasp_policy.py')
+    grasp_policy=importlib.util.module_from_spec(_spec);_spec.loader.exec_module(grasp_policy)
+    if policy_stamp and policy_stamp[0] != grasp_policy.signature(Path(stats[0][0]).parent.parent):
+        raise ValueError('박스 그리퍼 입력이 바뀌었습니다. 다시 준비하세요.')
     trajectory,source,report_path=[Path(x[0]) for x in stats]
     raw={str(path):path.read_bytes() for path in (trajectory,source,report_path)}
     if any((path.stat().st_mtime_ns,path.stat().st_size)!=(stamp,size) for (name,stamp,size),path in zip(stats,(trajectory,source,report_path))):
@@ -1122,8 +1130,10 @@ def build_package(key):
         raise ValueError('선택 구간의 그리퍼 원본이 없습니다.')
     if any(b-a>.25 for a,b in zip(times,times[1:]) if a<used[1] and b>used[0]):
         raise ValueError('선택 구간의 그리퍼 피드백 공백이 0.25초를 넘습니다.')
-    data['claw']=np.array([np.interp(phases,times,np.array(grips)[:,i]) for i in range(2)]).T.tolist()
-    data.update(gripper_policy=dict(close_at_open_fraction=.40,comparison='<=',target_open_fraction=0.,applied_after_interpolation=True),
+    grasp=grasp_policy.load(trajectory.parent.parent)
+    data['claw']=(100*(1-grasp_policy.sample_many(grasp,phases))).tolist()
+    data.update(gripper_policy=dict(grasp_policy.POLICY,execution_sampling='100Hz previous sample'),
+        gripper_input_sha256=grasp['input_sha256'],gripper_policy_sha256=grasp['policy_sha256'],
         interval=list(interval),fingerprint=fingerprint,
         velocity_limits=[float(x['velocity_limit']) for x in peaks],
         acceleration_limits=[float(x['acceleration_limit']) for x in peaks],

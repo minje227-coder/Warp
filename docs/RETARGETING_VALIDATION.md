@@ -180,3 +180,26 @@ collision exclusions or relaxed parallelism have been adopted.
 
 Detailed diagnostic artifacts remain on lab6 under
 `/home/lab6/Warp-review/wilor-kuavo-standard/results/diagnose-box3cm-20261022-235539/`.
+
+## Box-relative grasp policy adoption (2026-10-23)
+
+User-approved common settings are recorded in `STANDARD.json.workflow.gripper`
+and RETARGETING_STANDARD.md: close <=70% with box-depth gating; release >50%
+with relative opening/withdrawal, including the documented 5mm/40ms settings
+and persistence/regrasp gates. These are project settings, not empirically
+calibrated hardware thresholds. No per-recording release timestamp is used.
+
+Validation on the latest main-based promotion:
+- Execution test suite: 115 tests passed, including 17 box-grasp regression tests.
+- Standard pipeline test suite: 23 tests passed.
+- Delivered preview state traces match the promoted implementation for all six
+  computed episodes (13-42-32, 13-43-02, 13-43-31, 13-44-20, 13-44-52, 13-45-15).
+- Synthetic fixture checks cover recording/base transforms, bilateral independence,
+  missing-observation holds, relative movement, short pulses, regrasp, discrete
+  seeking, first-state/package/preview consistency and unchanged body P/V/A/files.
+- Replay packaging on the six existing episodes passed the existing artifact gates
+  in the prior offline contract check; rejected trajectories retain their status.
+
+Only gripper policy/preview behavior is promoted here. Existing IK/time-assignment
+results and CURRENT.json remain selected as before. No robot motion or service
+restart was performed for this promotion; physical grasp validation remains open.

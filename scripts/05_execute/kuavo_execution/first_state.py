@@ -26,7 +26,8 @@ def target(detail):
     fractions = vector([g.get('open_fraction') if isinstance(g, dict) else None for g in grips], 2, '그리퍼')
     if any(not 0 <= v <= 1 for v in fractions):
         raise ValueError('그리퍼 열림 비율이 범위를 벗어났습니다.')
-    fractions = [0. if v <= .40 else v for v in fractions]
+    if initial.get('gripper_policy', {}).get('kind') != 'box_relative_grasp_v1':
+        fractions = [0. if v <= .40 else v for v in fractions]
     limits = dict(velocity=[3.14]*4+[5.14]*14,
                   acceleration=[5.14]*4+[25.]*14)
     return dict(q=q, joint_names=NAMES, limits=limits, base_pose=vector(initial.get('base_pose'), 3, '시작 베이스'),

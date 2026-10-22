@@ -48,7 +48,9 @@ def publish(result, output, cutoff=0.):
         trajectory_sha256=sha(result/'results/execution-trajectory-100hz.npz'),frames=len(pts),duration_s=duration,
         arm_initialization_fixed=True,original_render_pts_preserved=True,validation_status=report['status'],
         lower_right=rendered.get('lower_right'),human_skeleton_lower_right=rendered.get('human_skeleton_lower_right'),
-        gripper_policy=dict(close_at_open_fraction=.40,target_open_fraction=0.,indicator='red_finger_tips'),
+        gripper_policy=rendered['gripper_policy'],
+        gripper_policy_manifest=str(result/'results/gripper-policy.json'),
+        gripper_policy_trace=str(result/'results/gripper-policy-trace.jsonl'),
         physical_replay_recording=False,trajectory_verified=not rejected,executable=False,robot_commands_sent=0)
     (output/'MEDIA.json').write_text(json.dumps(manifest,indent=2)+'\n')
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from .head_stream import Agent, pose_to_T
-from . import standard_rack, first_state, package as playback
+from . import standard_rack, first_state, package as playback, grasp_policy
 from .history import DataDirectory
 
 common = None
@@ -184,6 +184,7 @@ def load_detail(key):
     reference = result/"data/source-trajectory.jsonl" if result else Path(prepared["reference"])
     paths = [Path(e['prepared']), reference, provider/"data/frame-scenes.jsonl", provider/"data/rack-preview-anchor.json", provider/"tag_policy.json", provider/"object_overlay_config.json", standard_rack.SOURCE]
     if result:
+        paths.extend(Path(p[0]) for p in grasp_policy.signature(result))
         paths.append(result/"REPORT.json")
         if (result/"results/execution-trajectory-100hz.npz").is_file():
             paths.append(result/"results/execution-trajectory-100hz.npz")
@@ -205,6 +206,9 @@ def load_detail(key):
         with np.load(result/"results/execution-trajectory-100hz.npz", allow_pickle=False) as z:
             initial.update(source_s=float(z["source_s"][0]), base_pose=z["position"][0,:3].tolist(),
                            q=z["position"][0,3:].tolist(), joint_names=z["names"][3:].tolist())
+    if result and (result/'results/execution-trajectory-100hz.npz').is_file():
+        initial['grippers']=[dict(open_fraction=v) for v in grasp_policy.at_execution(result,0.)]
+        initial['gripper_policy']=dict(grasp_policy.POLICY)
     scene = _scene_at(provider/"data/frame-scenes.jsonl", initial["source_s"])
     boxes = scene_boxes(scene)
     coordinate_preparation=prepared.get('coordinate_preparation')
@@ -272,7 +276,8 @@ def selection_detail(key, sid=None):
     out['environment_source_s'] = scene['elapsed_s']
     reference = Path(entry(key)['result'])/'data/source-trajectory.jsonl'
     source = _scene_at(reference, out['initial']['source_s'])
-    out['initial']['grippers'] = source.get('grippers')
+    out['initial']['grippers'] = [dict(open_fraction=v) for v in grasp_policy.at_execution(entry(key)['result'],selected['start']['execution_s'])]
+    out['initial']['gripper_policy'] = dict(grasp_policy.POLICY)
     with LOCK:
         if len(RANGE_DETAILS) >= 16:
             RANGE_DETAILS.pop(next(iter(RANGE_DETAILS)))
