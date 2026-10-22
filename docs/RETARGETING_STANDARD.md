@@ -143,3 +143,17 @@ python3 -m unittest discover -s scripts/05_execute/tests
 `SNAPSHOT_SHA256.json`으로 frozen source/config를 확인합니다. ROS2 Humble/MoveIt2 validator와 공식 S63 URDF/meshes 및 녹화별 입력은 별도로 준비해야 합니다.
 `STANDARD.json`의 lab6 runtime/validator 경로는 다른 host에서 설정해야 합니다.
 [검증 기록](RETARGETING_VALIDATION.md)에 3cm 실패와 기존 결과 유지 사실, 과거 benchmark 범위를 구분합니다.
+
+## Position-constraint numerical normalization (2026-10-23)
+
+The adopted constrained-path solver now expresses the native squared TCP
+position constraint as `distance_squared / radius_squared <= 1`. The radius
+(including its existing 0.98 reserve), lower bound, native AutoDiff evaluator,
+objective, initial guesses, 200-major-iteration budget and all independent
+acceptance checks remain unchanged. No collision, joint, orientation or V/A
+limit is relaxed. Other IK search experiments are not part of this adoption.
+
+The 13-43-54 fixed-height/box-axis-3cm input previously stopped with SNOPT 41.
+Normalization alone recovers it: 240-Hz invalid states 63 -> 2 -> 0, followed
+by complete timed Drake and MoveIt validation. The 13-43-31 frame-IK issue is
+separate; this patch does not claim to resolve that recording.

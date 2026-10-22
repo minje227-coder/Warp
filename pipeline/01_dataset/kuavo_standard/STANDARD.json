@@ -30,7 +30,14 @@
     "nonlinear_constraints": "TCP distance, body-downward cone, forward/camera hemispheres, bimanual orientation and collision; sampled constraints with independent adaptive refinement",
     "source_ik": "Original source IK rows retained without rewriting",
     "kalman": false,
-    "jerk": false
+    "jerk": false,
+    "position_constraint_normalization": {
+      "adopted_at": "2026-10-23 Asia/Seoul",
+      "expression": "native_squared_distance / native_upper_bound <= 1",
+      "physical_feasible_set_unchanged": true,
+      "solver_budget_unchanged": true,
+      "independent_acceptance_unchanged": true
+    }
   },
   "validation_execution": {
     "revised_at": "2026-10-20 Asia/Seoul",

@@ -16,7 +16,7 @@ from pydrake.math import BsplineBasis, RotationMatrix
 from pydrake.planning import KinematicTrajectoryOptimization
 from pydrake.trajectories import BsplineTrajectory
 from pydrake.multibody.inverse_kinematics import InverseKinematics, PointToPointDistanceConstraint
-from pydrake.solvers import SolverOptions
+from pydrake.solvers import SolverOptions, MathematicalProgram
 from path_tools import Reference, SplinePath, audit
 from validation_fast import install_environment_cache
 
@@ -24,6 +24,24 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT/'source'))
 from retarget.model import KuavoModel, TCP_SEMANTIC_BASES
 from retarget.geometry import yaw_rotation
+
+
+def normalized_squared_distance(distance):
+    """Rescale the native squared-distance inequality; preserve its feasible set.
+
+    A 9.8-mm radius has an upper bound of 9.604e-5 m^2. Normalize that
+    bound to one so SNOPT handles it on the same scale as angle/collision
+    constraints. Keep the native evaluator for both values and AutoDiff.
+    """
+    scale = float(distance.upper_bound()[0])
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError('Squared-distance upper bound must be finite and positive')
+    auxiliary = MathematicalProgram()
+    variables = auxiliary.NewContinuousVariables(distance.num_vars())
+    binding = auxiliary.AddConstraint(
+        lambda x, evaluator=distance, factor=scale: evaluator.Eval(x)/factor,
+        distance.lower_bound()/scale, distance.upper_bound()/scale, variables)
+    return auxiliary, binding.evaluator()
 
 
 def optimize(path, ref, model, failures):
@@ -94,7 +112,9 @@ def optimize(path, ref, model, failures):
             point = rb.T @ (goal['position']-origin)
             distance = PointToPointDistanceConstraint(model.plant, frame, np.zeros(3),
                 model.plant.world_frame(), point, 0., ref.allowance(t)*.98, context)
-            opt.AddPathPositionConstraint(distance, phase)
+            auxiliary, normalized = normalized_squared_distance(distance)
+            opt.AddPathPositionConstraint(normalized, phase)
+            contexts.append((auxiliary, distance))
             down = rb.T @ goal['body_down_direction']
             forward = rb.T @ goal['body_forward_direction']
             ik.AddAngleBetweenVectorsConstraint(frame, np.array([0.,0.,-1.]), model.plant.world_frame(), down,

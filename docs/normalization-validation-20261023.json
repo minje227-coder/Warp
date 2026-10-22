@@ -1,0 +1,91 @@
+{
+  "adopted_at": "2026-10-23 Asia/Seoul",
+  "change": "Native squared-distance residual normalization only",
+  "solver_major_iterations": 200,
+  "physical_constraints_relaxed": false,
+  "unit_tests_passed": 23,
+  "robot_commands_sent": 0,
+  "dashboard_catalog_modified": false,
+  "current_json_modified": false,
+  "results": [
+    {
+      "recording": "13-43-54",
+      "result": "/home/lab6/Warp-review/wilor-kuavo-standard/results/diagnose-box3cm-20261022-235539/path-final",
+      "status": "verified",
+      "report_sha256": "1e854a4a58ddb6a2adbc08d5148dcf2a5d3b4272301981a901dbaa827b70a404",
+      "unchanged_input_hashes": {
+        "data/source-trajectory.jsonl": true,
+        "data/source-config.json": true,
+        "data/reference.jsonl": true,
+        "data/reference-config.json": true,
+        "data/world.json": true,
+        "PROFILE.json": true
+      },
+      "motion_policy_values_unchanged": true,
+      "source_phase_states": 3622,
+      "source_knots": 396,
+      "timed_samples": 4911,
+      "minimum_sampled_clearance_m": 0.010009654457052668,
+      "max_sampled_velocity_ratio": 0.26490702857294574,
+      "max_sampled_acceleration_ratio": 0.9914557686792411,
+      "duration_s": 8.94173190143331,
+      "moveit": {
+        "accepted_invalid": 0,
+        "checked_states": 4911,
+        "interframe_invalid": 0,
+        "max_fk_error_m": 1.1161055004029252e-15,
+        "method": "MoveIt PlanningScene full robot self and environment check"
+      },
+      "base_curve_unchanged": true
+    },
+    {
+      "recording": "13-43-02",
+      "result": "/home/lab6/Warp-review/wilor-kuavo-standard/results/diagnose-box3cm-20261022-235539/path-regression",
+      "status": "verified",
+      "report_sha256": "f9a3a0ab21d126573b766c3575b28c32343aeec63158d1b043c6d2fe29681168",
+      "unchanged_input_hashes": {
+        "data/source-trajectory.jsonl": true,
+        "data/source-config.json": true,
+        "data/reference.jsonl": true,
+        "data/reference-config.json": true,
+        "data/world.json": true,
+        "PROFILE.json": true
+      },
+      "motion_policy_values_unchanged": true,
+      "source_phase_states": 4602,
+      "source_knots": 512,
+      "timed_samples": 6383,
+      "minimum_sampled_clearance_m": 0.011041129304117178,
+      "max_sampled_velocity_ratio": 0.2765355095235685,
+      "max_sampled_acceleration_ratio": 0.9942136070942991,
+      "duration_s": 11.795800999197404,
+      "moveit": {
+        "accepted_invalid": 0,
+        "checked_states": 6383,
+        "interframe_invalid": 0,
+        "max_fk_error_m": 1.3334236103572998e-15,
+        "method": "MoveIt PlanningScene full robot self and environment check"
+      },
+      "base_curve_unchanged": true
+    }
+  ],
+  "unresolved_ik": {
+    "recording": "13-43-31",
+    "original_frames": [
+      382,
+      383,
+      384,
+      385,
+      386
+    ],
+    "remaining_frames_after_diagnostic": [
+      382,
+      383,
+      384,
+      385
+    ],
+    "not_an_infeasibility_proof": true,
+    "diagnostic_root": "/home/lab6/Warp-review/wilor-kuavo-standard/results/diagnose-box3cm-20261022-235539"
+  },
+  "patch_sha256": "1278f3b2a8d3ae97130bfc420bb20fccfe9a06af3794706efbe55e835e182eb7"
+}

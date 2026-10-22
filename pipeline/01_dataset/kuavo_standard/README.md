@@ -111,3 +111,17 @@ removes CLOSE text and uses a lower-right side camera with that window's human s
 Live retargeting RGB shares the dashboard head buffer; single-tag fits allow projection only.
 The original IK/refinement/TOPPRA/verification profile remains in force.
 Policy adoption does not rewrite CURRENT or certify physical execution; consult the validation guide for failed 3cm recordings.
+
+## Position-constraint numerical normalization (2026-10-23)
+
+The adopted constrained-path solver now expresses the native squared TCP
+position constraint as `distance_squared / radius_squared <= 1`. The radius
+(including its existing 0.98 reserve), lower bound, native AutoDiff evaluator,
+objective, initial guesses, 200-major-iteration budget and all independent
+acceptance checks remain unchanged. No collision, joint, orientation or V/A
+limit is relaxed. Other IK search experiments are not part of this adoption.
+
+The 13-43-54 fixed-height/box-axis-3cm input previously stopped with SNOPT 41.
+Normalization alone recovers it: 240-Hz invalid states 63 -> 2 -> 0, followed
+by complete timed Drake and MoveIt validation. The 13-43-31 frame-IK issue is
+separate; this patch does not claim to resolve that recording.

@@ -144,3 +144,39 @@ No robot commands or mode setters were executed; jerk/Kalman remain off.
 - frozen source/config 52개 SHA256 일치, active runtime 핵심 계산/설정 14개 일치, 변경 Python AST·dashboard JavaScript 문법 확인.
 - 기존 dashboard adapter 설치 계획 dry-run 성공. 설치/서비스 재시작/로봇 동작은 실행하지 않음.
 - 서로 분기됐던 로컬 retarget 이력과 원격 main 이력을 병합해 보존. 별도 수집 앱의 미커밋 수정과 생성 영상은 추가하지 않음.
+
+## 2026-10-23: squared-distance normalization; no constraint relaxation
+
+The 2026-10-22 failures above are historical. The position constraint in the
+constrained C2 path stage is now normalized by its native squared radius.
+Ablation kept the original initial guess and 200 major iterations: normalization
+alone changed the 13-43-54 source-phase audit from 63 invalid states to 2, then 0.
+Its unchanged input IK rows, reference, collision world, base curve, tolerances,
+policy and original source timestamps are retained. The final patch uses the
+native upper bound rather than duplicating the physical radius.
+
+The final patched code passed all 3,622 source-phase states, all 396 source IK
+knots and 4,911 timed samples, including MoveIt full-robot/environment checks.
+Minimum sampled clearance was 10.00965 mm; maximum sampled velocity/acceleration
+ratios were 0.26491 / 0.99146. Execution duration was 8.9417319 s. No robot
+commands were sent. Dashboard selection/media and CURRENT.json were not changed.
+
+Twenty-three focused tests pass, including unchanged inside/outside physical
+boundaries at 9.8/19.6-mm solver radii and native AutoDiff/finite-difference checks.
+The previously passing 13-43-02 3cm recording also passed the final code:
+6,383 timed samples and MoveIt checks, with all original input hashes unchanged.
+See normalization-validation-20261023.json for exact results and artifact hashes.
+
+13-43-31 is not recovered. Its original five failed frames span source
+12.7416504--12.8747084 s. More iterations and neighboring/0cm warm starts did not
+recover them. Position/cost rescaling plus deterministic perturbed starts
+recovered frame 386 only; 382--385 still failed. In a separate depth-continuation
+diagnostic, successful isolated configurations reached 24--27 mm, while the
+next tested depth produced right wrist link7/box_100_A13_right and right-rack-
+pillar clearances below 10 mm (approximately 6.7--9.6 mm), sometimes also exceeding
+10-degree mutual tool orientation. These failed candidates identify a geometric
+bottleneck, not a proof that no feasible configuration exists. No smaller depth,
+collision exclusions or relaxed parallelism have been adopted.
+
+Detailed diagnostic artifacts remain on lab6 under
+`/home/lab6/Warp-review/wilor-kuavo-standard/results/diagnose-box3cm-20261022-235539/`.
