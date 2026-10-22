@@ -1,0 +1,26 @@
+#include <rclcpp/rclcpp.hpp>
+#include <moveit/robot_model/robot_model.h>
+#include <moveit/robot_state/robot_state.h>
+#include <moveit/planning_scene/planning_scene.h>
+#include <moveit/kinematics_base/kinematics_base.h>
+#include <moveit/robot_trajectory/robot_trajectory.h>
+#include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
+#include <pluginlib/class_loader.hpp>
+#include <moveit/constraint_samplers/default_constraint_samplers.h>
+#include <urdf_parser/urdf_parser.h>
+#include <srdfdom/model.h>
+#include <nlohmann/json.hpp>
+#include <fstream>
+#include <iostream>
+using J=nlohmann::json;
+std::string read(const std::string&p){std::ifstream f(p);if(!f)throw std::runtime_error(p);return {std::istreambuf_iterator<char>(f),{}};}
+Eigen::Vector3d vec(const J&j){return {j[0].get<double>(),j[1].get<double>(),j[2].get<double>()};}
+geometry_msgs::msg::Pose pose(const Eigen::Isometry3d&t){geometry_msgs::msg::Pose p;p.position.x=t.translation().x();p.position.y=t.translation().y();p.position.z=t.translation().z();Eigen::Quaterniond q(t.linear());p.orientation.x=q.x();p.orientation.y=q.y();p.orientation.z=q.z();p.orientation.w=q.w();return p;}
+Eigen::Isometry3d base(const J&r){auto b=r["base"];Eigen::Isometry3d t=Eigen::Isometry3d::Identity();t.translation()=Eigen::Vector3d(b[0].get<double>(),b[1].get<double>(),0);t.linear()=Eigen::AngleAxisd(b[2].get<double>(),Eigen::Vector3d::UnitZ()).toRotationMatrix();return t;}
+void world(planning_scene::PlanningScene&s,const J&r){s.getWorldNonConst()->clearObjects();for(auto&o:r["world"]){moveit_msgs::msg::CollisionObject m;m.header.frame_id="base_link";m.id=o["id"];m.operation=m.ADD;shape_msgs::msg::SolidPrimitive p;p.type=p.BOX;for(auto dim:o["dimensions"])p.dimensions.push_back(dim.get<double>());m.primitives.push_back(p);Eigen::Isometry3d t=Eigen::Isometry3d::Identity();t.translation()=vec(o["position"]);auto q=o["quaternion_xyzw"];t.linear()=Eigen::Quaterniond(q[3].get<double>(),q[0].get<double>(),q[1].get<double>(),q[2].get<double>()).toRotationMatrix();m.pose=pose(base(r).inverse()*t);m.primitive_poses.push_back(pose(Eigen::Isometry3d::Identity()));if(!s.processCollisionObjectMsg(m))throw std::runtime_error("world");}}
+bool clear(planning_scene::PlanningScene&s,const moveit::core::RobotState&st,double margin=.01001){collision_detection::CollisionRequest req;collision_detection::CollisionResult res;s.checkCollision(req,res,st);return !res.collision&&st.satisfiesBounds()&&s.getCollisionEnvUnpadded()->distanceSelf(st,s.getAllowedCollisionMatrix())>=margin&&s.getCollisionEnv()->distanceRobot(st,s.getAllowedCollisionMatrix())>=margin;}
+std::vector<std::string> tips={"zarm_l7_endeffector_center","zarm_r7_endeffector_center"};
+bool directions(const moveit::core::RobotState&s,const J&r,int side){auto rb=base(r).linear();auto rot=rb*s.getGlobalLinkTransform(tips[side]).linear();auto g=r["tcp_targets"][side];auto down=vec(g["body_down_direction"]);return (-rot.col(2)).dot(down)>=.5-1e-6&&(-rot.col(2)).dot(vec(g["body_forward_direction"]))>=-1e-6&&(rot*vec(g["camera_mount_side_axis_tcp"])).dot(-down)>=-1e-6;}
+double parallel(const moveit::core::RobotState&s){Eigen::Matrix3d sem=Eigen::Vector3d(-1,-1,1).asDiagonal();return std::abs(Eigen::AngleAxisd(s.getGlobalLinkTransform(tips[0]).linear().transpose()*s.getGlobalLinkTransform(tips[1]).linear()*sem).angle());}
+
+int main(int argc,char**argv){rclcpp::init(argc,argv);std::string root=argv[1];auto u=urdf::parseURDF(read(root+"/model/s63.urdf"));auto sr=std::make_shared<srdf::Model>();sr->initString(*u,read(root+"/config/s63.srdf"));auto model=std::make_shared<moveit::core::RobotModel>(u,sr);planning_scene::PlanningScene scene(model);for(auto n:{"base_link","wheel_left_front","wheel_right_front","wheel_left_behind","wheel_right_behind"})scene.getAllowedCollisionMatrixNonConst().setEntry("ground",n,true);auto d=J::parse(read(root+"/data/checks.json"));auto names=d["joint_names"].get<std::vector<std::string>>();J out=J::array();double maxfk=0;int accepted=0,inter=0;for(auto&r:d["samples"]){world(scene,r);moveit::core::RobotState st(model);st.setToDefaultValues();for(int j=0;j<18;j++)st.setVariablePosition(names[j],r["q"][j]);st.update();collision_detection::CollisionRequest req;req.contacts=true;req.max_contacts=100;collision_detection::CollisionResult res;scene.checkCollision(req,res,st);double fk=0;for(int s=0;s<2;s++){auto p=base(r)*st.getGlobalLinkTransform(tips[s]).translation();fk=std::max(fk,(p-vec(r["tcp_world_m"][s])).norm());}maxfk=std::max(maxfk,fk);J pairs=J::array();for(auto&p:res.contacts)pairs.push_back({p.first.first,p.first.second});bool bad=res.collision||!st.satisfiesBounds(1e-8);if(bad){if(r["kind"]=="accepted")accepted++;else inter++;}out.push_back({{"index",r["index"]},{"elapsed_s",r["elapsed_s"]},{"kind",r["kind"]},{"collision",res.collision},{"bounds",st.satisfiesBounds(1e-8)},{"pairs",pairs},{"fk_error_m",fk}});}J result={{"summary",{{"checked_states",out.size()},{"accepted_invalid",accepted},{"interframe_invalid",inter},{"max_fk_error_m",maxfk},{"method","MoveIt PlanningScene full robot self and environment check"}}},{"states",out}};std::ofstream(root+"/results/verification.json")<<result.dump(2);std::cout<<result["summary"].dump()<<std::endl;rclcpp::shutdown();}

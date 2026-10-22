@@ -1,0 +1,46 @@
+{
+  "adopted_at": "2026-10-19 Asia/Seoul",
+  "model": "fixed_image_calibrated_coplanar_tag_bundle",
+  "source_take": "17-13-10_7ef9211ae173462d9952a35ebc1014fa",
+  "source_camera_calibration_sha256": "87e6e60bb7015c607badb86c036c59935ddb1a171bef078a97614ba6dd5de652",
+  "review_video_sha256": "27d9f8b9d80b1d6e1c7efa48263e2a8e30775d902278d69c66168994238e3e32",
+  "selected_review_candidate": "early_to_late",
+  "fit_range_s": [
+    0,
+    7
+  ],
+  "fit_frames": 60,
+  "validation_range_s": [
+    13,
+    20.1
+  ],
+  "validation_frames": 148,
+  "validation_pixel_gate_passes": 147,
+  "tag_size_m": 0.06,
+  "tag100_reference_in_front_face_axes_m": [
+    -0.0975,
+    0.076,
+    0.0
+  ],
+  "relative_translation_101_in_tag100_axes_m": [
+    0.1844765487967015,
+    -0.005256235508671144,
+    0.0
+  ],
+  "relative_inplane_rotation_101_rad": -0.044749254981557816,
+  "calibration_scope": "Approved image-based relative tag extrinsics; not a physical measurement or camera calibration replacement",
+  "time_dependent_switching": false,
+  "adoption_validation": {
+    "source_window_s": [
+      0,
+      20
+    ],
+    "box_observed_frames": 580,
+    "multi_tag_visible_frames": 486,
+    "joint_multi_tag_frames": 484,
+    "single_tag_fallback_frames": 2,
+    "single_tag_frames": 94,
+    "tests_passed": 17,
+    "box_pixel_rms_median": 0.6082916387848243
+  }
+}

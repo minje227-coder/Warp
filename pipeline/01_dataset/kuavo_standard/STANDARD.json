@@ -1,0 +1,111 @@
+{
+  "name": "WiLoR-KUAVO standard: lazy base, collision-aware native IK, adaptive TCP and official V/A TOPPRA",
+  "adopted_at": "2026-10-17 Asia/Seoul",
+  "adopted_from": "/home/lab6/Warp-review/wilor-kuavo-parameter-search-20261016/winners/R_originalbase_body1000_acc300",
+  "solver_profile": {
+    "name": "standard_lazybase_body1000_acc300",
+    "adaptive": true,
+    "bridge": true,
+    "base": "original",
+    "free_torso": true,
+    "body_scale": 0.1,
+    "body_cont_weight": 1000.0,
+    "acc_weight": 300.0,
+    "solver_position_factor": 0.85,
+    "solver_collision_reserve_m": 0.001,
+    "solver_joint_reserve_rad": 0.001,
+    "solver_orientation_reserve_deg": 0.5
+  },
+  "moveit_validator": {
+    "path": "/home/lab6/Warp-review/wilor-kuavo-standard-env-candidate-20261016/moveit_verify/build/verify",
+    "sha256": "5c352b658dd941112e00a5de50b2c470f7712ed16f1792a1c727469a19da74c0"
+  },
+  "raw_input_preprocessing": "Separate take-specific stage; run accepts prepared reference/world/config. No implicit reuse of another recording.",
+  "previous_standard": "/home/lab6/Warp-review/backups/standard-before-lazybase-collision-toppra-20261017",
+  "trajectory_geometry": {
+    "revised_at": "2026-10-20 Asia/Seoul",
+    "method": "Drake SNOPT constrained C2 B-spline refinement before TOPPRA",
+    "base": "Original lazy-base spline held fixed",
+    "joint_bounds": "All control points inside the existing joint interior bounds",
+    "nonlinear_constraints": "TCP distance, body-downward cone, forward/camera hemispheres, bimanual orientation and collision; sampled constraints with independent adaptive refinement",
+    "source_ik": "Original source IK rows retained without rewriting",
+    "kalman": false,
+    "jerk": false
+  },
+  "validation_execution": {
+    "revised_at": "2026-10-20 Asia/Seoul",
+    "workers_default": 4,
+    "workers_environment": "KUAVO_VALIDATION_WORKERS=1..4",
+    "process_start_method": "spawn",
+    "sample_grids_unchanged": true,
+    "criteria_unchanged": true,
+    "interpolation": "Same two-keyframe Slerp with exact phase/context/base cache keys",
+    "refinement_cache": "Reuse only bit-identical coordinates at the same source phase within one run"
+  },
+  "workflow": {
+    "revision": "2026-10-22",
+    "height_reference": {
+      "frame": "fixed_rack_height",
+      "tag_centers_m": {
+        "0": 1.615,
+        "4": 1.615,
+        "1": 1.615,
+        "2": 1.0,
+        "5": 1.0,
+        "3": 1.0
+      },
+      "method": "least_squares_common_z_translation",
+      "robot_observation_used": false,
+      "max_residual_m": 0.02,
+      "legacy_transform_key": "T_base_recording"
+    },
+    "tcp_offset": {
+      "default_cm": 3.0,
+      "frame": "box_tag",
+      "axis": "-Y",
+      "scope": "both TCP positions throughout source phase",
+      "vertical_fallback": false,
+      "missing_axis": "reject"
+    },
+    "gripper": {
+      "close_at_open_fraction": 0.4,
+      "inclusive": true,
+      "closed_open_fraction": 0.0,
+      "claw_position": 100,
+      "apply_after_interpolation": true,
+      "raw_values_unchanged": true,
+      "legacy_payload_policy": "explicit threshold retained; absent policy unchanged"
+    },
+    "preview": {
+      "panels": [
+        "external RGB",
+        "My view",
+        "whole body + Kuavo",
+        "side view"
+      ],
+      "closed_indicator": "red finger/contact meshes only; no CLOSE caption",
+      "side_camera": {
+        "azimuth_base_deg": -90,
+        "elevation_deg": -8,
+        "distance_m": 2.65,
+        "lookat_forward_m": 0.4,
+        "lookat_z_m": 0.95,
+        "human_skeleton": false
+      }
+    },
+    "live_preview": {
+      "head_buffer": "common.LINK.frame('head')",
+      "head_endpoint": "/kuavo/cam/head",
+      "tag_topic": "/rwh/tag_detections",
+      "single_tag_projection": true,
+      "single_tag_robot_alignment": false,
+      "tag_failure_stops_video": false
+    },
+    "input_preparation": {
+      "discard_recording_tail_s": 2,
+      "standard_nominal_arm_seed": true,
+      "always_start_from_original_descriptor": true
+    },
+    "physical_execution_validated": false
+  }
+}

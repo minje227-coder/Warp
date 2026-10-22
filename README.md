@@ -1,5 +1,28 @@
 # Warp
 
+## Retargeting standard — 2026-10-22 채택
+
+WiLoR→KUAVO 계산·검증·4분할 영상은 채택된 **wilor-kuavo-standard**를 사용합니다.
+날짜별 실험 solver/renderer를 자동 선택하지 않습니다.
+
+- 랙 태그 중심 높이: **0·4·1 = 1.615m**, **2·5·3 = 1.000m**. 녹화 좌표의 공통 Z 이동으로 맞추며, 로봇 카메라·TF로 높이를 다시 계산하지 않습니다. 녹화 XY·yaw·형상은 유지하고 태그별 잔차를 기록합니다.
+- 양손 TCP: 기본 **3cm**, 각 박스 태그의 **-Y 아래축**으로 전체 궤적에 적용합니다. 고정 좌표계 수직 보정·대체 경로는 없습니다. 원본 입력에서 매번 계산하므로 누적되지 않습니다.
+- 그리퍼: 보간한 열림 값 **40% 이하 → 완전히 닫기**. 초과 값은 유지하며 첫 자세·재생·영상에 동일하게 적용합니다. 힘·속도를 높이는 설정은 아닙니다.
+- 영상: 닫힘 구간에는 **그리퍼 손가락 접촉부만 빨간색**, CLOSE 문구 없음. 우하단은 **측면 뷰**, 그 창의 사람 스켈레톤은 숨깁니다. 빨간색은 닫힘 명령 표시이며 실제 접촉 검출은 아닙니다.
+- 실시간 head 영상은 대시보드와 **동일한 최신 버퍼/엔드포인트**를 사용합니다. 태그 실패로 영상이 멈추지 않습니다. RWH 태그 하나로도 박스를 투영하지만, 로봇 정렬·이동 허용에는 사용하지 않습니다.
+
+```bash
+cd /home/lab6/Warp
+bash scripts/02_convert/convert_episode_standard.sh /path/to/episode --prepared /path/to/prepared.json
+```
+
+녹화별 입력 준비 후 **native IK → constrained C2 B-spline → TOPPRA → dense/MoveIt 검증 → 4-window 렌더링**을 수행합니다.
+대시보드 계산은 고정 높이·박스축 보정을 준비한 뒤 이 진입점을 호출합니다. CLI에 원본 prepared를 직접 넘기면 UI 전처리를 자동 적용하지 않으므로 아래 문서를 따르세요.
+기존 lazy base·몸통/양팔·고정 head와 공통 시간축을 유지하며 Kalman/jerk는 사용하지 않습니다.
+과거 **13.35초는 준비된 입력의 IK+시간 재조정만**이며 전체 처리 시간이 아닙니다.
+
+[실행·입력 준비·전체 합의](docs/RETARGETING_STANDARD.md) · [검증·실패 기록](docs/RETARGETING_VALIDATION.md) · [채택 코드/정책](pipeline/01_dataset/kuavo_standard) · [대시보드 설치/재생](scripts/05_execute/README.md)
+
 Quest에서 사람의 움직임과 실제 전면 RGB를 수집하고 로봇 retargeting과 학습으로 확장하는 프로젝트입니다.
 
 ## 현재 수집: Quest raw v3

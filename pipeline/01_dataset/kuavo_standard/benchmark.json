@@ -1,0 +1,27 @@
+{
+  "scope": "Prepared input from one 0-20s recording; not raw-recording end-to-end latency or hardware execution",
+  "accepted_knots": 597,
+  "checked_states": 6257,
+  "moveit_invalid": 0,
+  "execution_duration_s": 10.092341819331216,
+  "ik_wall_s": 11.715371244994458,
+  "retime_wall_s": 1.6344972390215844,
+  "dense_validation_wall_s": 45.55428426503204,
+  "render_wall_s": 16.870066241011955,
+  "minimum_sampled_clearance_m": 0.010885821543184473,
+  "source_max_joint_step_deg": 1.0394046777319952,
+  "entrypoint_reproduced_exactly": true,
+  "other_recording": {
+    "prepared_states": 417,
+    "skipped_reference_or_input": 23,
+    "skipped_unobserved_box": 10,
+    "ik_failures": 0,
+    "dense_pose_failures": 70,
+    "invalid_source_interval_s": [
+      14.183062208024944,
+      14.47873179484542
+    ],
+    "moveit_collision_failures": 0,
+    "accepted_as_execution": false
+  }
+}

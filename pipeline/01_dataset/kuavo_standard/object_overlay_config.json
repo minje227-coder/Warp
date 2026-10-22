@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "tag_family": "tag36h11",
+  "pose_method": "OpenCV joint planar PnP + RANSAC + LM; single-tag IPPE_SQUARE fallback",
+  "tag_pose_python": "/home/lab6/humanoid/box_detection/.venv/bin/python",
+  "rack": {
+    "tag_id": 0,
+    "geometry": "object_assets/rack.json",
+    "stabilization": "one_fixed_pose_over_all_selected_video_frames",
+    "position_aggregation": "coordinatewise_median",
+    "rotation_aggregation": "scipy Rotation.mean chordal L2",
+    "inlier_min_radius_m": 0.025,
+    "inlier_median_multiplier": 3,
+    "tag_size_m": 0.04,
+    "paper_margin_m": 0.005,
+    "paper_size_m": 0.05,
+    "tag_offsets_in_geometry_tag_axes_m": {
+      "0": [
+        -0.38,
+        0.0,
+        0.05
+      ],
+      "1": [
+        0.38,
+        0.0,
+        0.05
+      ],
+      "2": [
+        -0.38,
+        -0.61,
+        0.05
+      ],
+      "3": [
+        0.38,
+        -0.61,
+        0.05
+      ],
+      "4": [
+        0.0,
+        0.0,
+        0.05
+      ],
+      "5": [
+        0.0,
+        -0.61,
+        0.05
+      ]
+    },
+    "placement": "outer left/right paper side flush to inner pillar; tags 4/5 at midpoint of 0/1 and 2/3; all vertical centers at shelf front thickness midpoint",
+    "pose_method": "joint_multi_tag_with_explicit_single_tag_fallback"
+  },
+  "box": {
+    "type": "S(A13)",
+    "size_m": [
+      0.265,
+      0.185,
+      0.222
+    ],
+    "stabilization": "centered_time_window_position_and_rotation_mean",
+    "half_window_s": 0.3,
+    "maximum_gap_s": 0.1,
+    "position_mean": "arithmetic",
+    "rotation_mean": "scipy Rotation.mean chordal L2",
+    "boundary_policy": "truncate",
+    "stationary_lock": false,
+    "candidate_reselection": false,
+    "tag_size_m": 0.06,
+    "paper_margin_m": 0.005,
+    "paper_size_m": 0.07,
+    "group_size": 10,
+    "slots": {
+      "0": "front_left",
+      "1": "front_right",
+      "2": "back_left",
+      "3": "back_right",
+      "4-9": "reserved"
+    },
+    "alignment": "tag100 preserves original front-face anchor; tag101 uses adopted fixed image-calibrated relative position and in-plane rotation",
+    "shell_thickness_m": 0.001,
+    "top_open": true,
+    "pose_method": "joint_multi_tag_with_explicit_single_tag_fallback",
+    "tag_offsets_in_front_face_axes_m": {
+      "100": [
+        -0.0975,
+        0.076,
+        0.0
+      ],
+      "101": [
+        0.0869765487967015,
+        0.07074376449132885,
+        0.0
+      ]
+    },
+    "tag_inplane_rotations_rad": {
+      "100": 0.0,
+      "101": -0.044749254981557816
+    },
+    "tag_layout_calibration": "box_tag_calibration.json",
+    "instances": [
+      {
+        "tag_offsets_in_front_face_axes_m": {
+          "100": [
+            -0.0975,
+            0.076,
+            0.0
+          ],
+          "101": [
+            0.0869765487967015,
+            0.07074376449132885,
+            0.0
+          ]
+        },
+        "tag_inplane_rotations_rad": {
+          "100": 0.0,
+          "101": -0.044749254981557816
+        },
+        "tag_layout_calibration": "box_tag_calibration.json",
+        "id": "box_100_A13",
+        "layout_provenance": "existing adopted calibration for this instance"
+      },
+      {
+        "id": "box_110_A13",
+        "tag_offsets_in_front_face_axes_m": {
+          "110": [
+            -0.0975,
+            0.076,
+            0.0
+          ],
+          "111": [
+            0.0975,
+            0.076,
+            0.0
+          ]
+        },
+        "tag_inplane_rotations_rad": {
+          "110": 0.0,
+          "111": 0.0
+        },
+        "tag_layout_calibration": null,
+        "layout_provenance": "nominal standard A13 paper-edge placement; not the 100/101 image calibration"
+      }
+    ],
+    "missing_observation_policy": "hold_last_valid_pose",
+    "before_first_observation": "unknown",
+    "observation_scope": "full_episode",
+    "maximum_hold_s": null
+  },
+  "pose_selection": {
+    "minimum_tag_y_up_component": 0.65,
+    "maximum_reprojection_rms_px": 2.0
+  },
+  "views": [
+    "quest_right_rgb",
+    "human_kuavo_common_world",
+    "kuavo_head_20deg_down"
+  ],
+  "external_rgb_unchanged_before_encoding": true,
+  "render_style": "rack wireframe; box four filled sides and bottom; top open",
+  "colors": {
+    "rack": "green",
+    "box": "gold"
+  },
+  "extra_display_transform": false,
+  "world_alignment_verified": false,
+  "ground_height_correction_m": 0.0,
+  "final_video": "object-overlay/four-views-rack-box.mp4",
+  "verification": "object-overlay/verification.json",
+  "tag_policy": "tag_policy.json",
+  "box_fill_alpha": 140,
+  "multi_tag_pose": {
+    "method": "joint_coplanar_PnP_RANSAC_LM",
+    "ransac_reprojection_error_px": 3.0,
+    "ransac_iterations": 200,
+    "ransac_confidence": 0.999,
+    "minimum_joint_tags": 2,
+    "outlier_rejection": "whole_tag",
+    "on_joint_failure": "explicit_single_tag_fallback",
+    "single_tag_method": "SOLVEPNP_IPPE_SQUARE",
+    "pixel_domain": "existing_rectified_input"
+  }
+}
